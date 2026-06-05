@@ -67,6 +67,23 @@ async def subscription(token: str, request: Request) -> Response:
     )
 
 
+def _require_admin(credentials: HTTPBasicCredentials = Depends(security)) -> str:
+    if not settings.admin_password:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Set PANEL_ADMIN_PASSWORD before using the admin panel",
+        )
+    username_ok = secrets.compare_digest(credentials.username, settings.admin_username)
+    password_ok = secrets.compare_digest(credentials.password, settings.admin_password)
+    if not (username_ok and password_ok):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_form(_: str = Depends(_require_admin)) -> str:
     return _render_admin(load_panel_settings())
@@ -158,23 +175,6 @@ def _wants_html(request: Request) -> bool:
         return False
     vpn_clients = ("v2ray", "clash", "sing-box", "hiddify", "streisand", "shadowrocket", "nekobox", "v2rayng")
     return not any(client in user_agent for client in vpn_clients)
-
-
-def _require_admin(credentials: HTTPBasicCredentials = Depends(security)) -> str:
-    if not settings.admin_password:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Set PANEL_ADMIN_PASSWORD before using the admin panel",
-        )
-    username_ok = secrets.compare_digest(credentials.username, settings.admin_username)
-    password_ok = secrets.compare_digest(credentials.password, settings.admin_password)
-    if not (username_ok and password_ok):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid admin credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    return credentials.username
 
 
 def _normalize_color(value: str) -> str:
