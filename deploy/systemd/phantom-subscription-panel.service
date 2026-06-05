@@ -1,0 +1,15 @@
+[Unit]
+Description=Phantom Subscription Panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/phantom-subscription-panel
+EnvironmentFile=/opt/phantom-subscription-panel/.env
+ExecStart=/opt/phantom-subscription-panel/venv/bin/uvicorn phantom_subscription_panel.app:app --host 127.0.0.1 --port 8090
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
