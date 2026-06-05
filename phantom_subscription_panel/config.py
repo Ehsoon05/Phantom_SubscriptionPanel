@@ -16,8 +16,9 @@ def _bool_env(name: str, default: bool) -> bool:
 
 
 class Settings:
-    phantom_db_url = os.getenv("PHANTOM_DB_URL", "sqlite+aiosqlite:////opt/phantom/vpn_shop.db").strip()
+    panel_db_url = os.getenv("PANEL_DB_URL", "sqlite+aiosqlite:////opt/phantom-subscription-panel/panel.db").strip()
     public_base_url = os.getenv("PUBLIC_BASE_URL", "https://api.phantomhubs.shop").strip().rstrip("/")
+    sync_token = os.getenv("PANEL_SYNC_TOKEN", "").strip()
     upstream_verify_tls = _bool_env("UPSTREAM_VERIFY_TLS", False)
     request_timeout_seconds = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
     admin_username = os.getenv("PANEL_ADMIN_USERNAME", "admin").strip()

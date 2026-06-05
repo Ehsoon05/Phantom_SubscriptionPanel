@@ -4,18 +4,34 @@ import html
 import secrets
 
 import httpx
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from .config import settings
-from .database import Config, async_session
+from .database import Base, Config, async_session, engine
 from .panel_settings import PanelSettings, load_panel_settings, save_panel_settings
 
 
 app = FastAPI(title="Phantom Subscription Panel")
 security = HTTPBasic()
+
+
+class ConfigSyncPayload(BaseModel):
+    token: str
+    upstream_url: str
+    volume_gb: int
+    category_key: str = "default"
+    is_sold: bool = False
+    service_name: str | None = None
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 
 @app.get("/")
@@ -74,6 +90,37 @@ async def admin_save(
     )
     save_panel_settings(panel)
     return _render_admin(panel, saved=True)
+
+
+@app.post("/internal/configs", response_class=PlainTextResponse)
+async def sync_config(payload: ConfigSyncPayload, authorization: str | None = Header(default=None)) -> str:
+    if not settings.sync_token:
+        raise HTTPException(status_code=403, detail="PANEL_SYNC_TOKEN is not configured")
+    expected = f"Bearer {settings.sync_token}"
+    if not authorization or not secrets.compare_digest(authorization, expected):
+        raise HTTPException(status_code=401, detail="Invalid sync token")
+
+    async with async_session() as session:
+        result = await session.execute(select(Config).where(Config.public_sub_token == payload.token))
+        config = result.scalar_one_or_none()
+        if config is None:
+            config = Config(
+                public_sub_token=payload.token,
+                sub_link=payload.upstream_url,
+                volume_gb=payload.volume_gb,
+                category_key=payload.category_key,
+                is_sold=payload.is_sold,
+                service_name=payload.service_name,
+            )
+            session.add(config)
+        else:
+            config.sub_link = payload.upstream_url
+            config.volume_gb = payload.volume_gb
+            config.category_key = payload.category_key
+            config.is_sold = payload.is_sold
+            config.service_name = payload.service_name
+        await session.commit()
+    return "ok"
 
 
 async def _config_for_token(token: str) -> Config | None:

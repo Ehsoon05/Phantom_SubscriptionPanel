@@ -12,15 +12,16 @@ class Base(DeclarativeBase):
 
 
 class Config(Base):
-    __tablename__ = "configs"
+    __tablename__ = "subscription_configs"
 
     id = Column(Integer, primary_key=True)
     volume_gb = Column(Integer, nullable=False)
     category_key = Column(String, nullable=False, default="default")
     sub_link = Column(String, nullable=False, unique=True)
-    public_sub_token = Column(String, nullable=True, unique=True)
+    public_sub_token = Column(String, nullable=False, unique=True)
     is_sold = Column(Boolean, default=False)
+    service_name = Column(String, nullable=True)
 
 
-engine = create_async_engine(settings.phantom_db_url, echo=False)
+engine = create_async_engine(settings.panel_db_url, echo=False)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

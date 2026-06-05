@@ -2,8 +2,9 @@
 
 Standalone subscription gateway for Phantom.
 
-It reads Phantom bot `configs` rows by `public_sub_token`, fetches the original
-Marzban subscription URL, and serves:
+The Phantom bot syncs subscription links into this panel through
+`POST /internal/configs`. The panel stores those links in its own database, fetches
+the original Marzban subscription URL, and serves:
 
 - raw subscription content for VPN clients
 - a branded browser page for normal web visits
@@ -12,8 +13,9 @@ Marzban subscription URL, and serves:
 ## Environment
 
 ```dotenv
-PHANTOM_DB_URL=sqlite+aiosqlite:////opt/phantom/vpn_shop.db
+PANEL_DB_URL=sqlite+aiosqlite:////opt/phantom-subscription-panel/panel.db
 PUBLIC_BASE_URL=https://api.phantomhubs.shop
+PANEL_SYNC_TOKEN=یک-توکن-خیلی-قوی-و-تصادفی
 PANEL_ADMIN_USERNAME=admin
 PANEL_ADMIN_PASSWORD=change-this-password
 PANEL_SETTINGS_FILE=/opt/phantom-subscription-panel/panel-settings.json
@@ -31,6 +33,13 @@ uvicorn phantom_subscription_panel.app:app --host 127.0.0.1 --port 8090
 ```
 
 ## Deploy
+
+```bash
+chmod +x scripts/install.sh
+./scripts/install.sh
+```
+
+Manual deploy:
 
 ```bash
 cp deploy/systemd/phantom-subscription-panel.service /etc/systemd/system/
