@@ -8,7 +8,11 @@ the original Marzban subscription URL, and serves:
 
 - raw subscription content for VPN clients
 - a branded browser page for normal web visits
-- a small `/admin` page for visual settings
+- a full `/admin` page for visual settings, manual URL conversion, and link management
+
+The public DNS record should be proxied through Cloudflare. For VPN subscription
+paths, configure a Cache Rule matching `/token/*` and `/sub/*` with cache bypass,
+and do not enable a JavaScript challenge on those paths.
 
 ## Environment
 
