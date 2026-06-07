@@ -10,9 +10,14 @@ from .config import settings
 class PanelSettings:
     brand_name: str = "Phantom Hubs"
     primary_color: str = "#426df8"
+    accent_color: str = "#22c55e"
+    background_color: str = "#0f172a"
     channel_handle: str = "@PhantomHubs"
     hero_text: str = "اشتراک شما آماده است. این لینک را داخل اپلیکیشن کلاینت خود وارد کنید."
     support_text: str = "برای آموزش‌ها و اطلاعیه‌ها عضو کانال شوید."
+    copy_button_text: str = "کپی لینک اشتراک"
+    apps_title: str = "اتصال سریع"
+    show_config_preview: bool = True
 
 
 def load_panel_settings() -> PanelSettings:
