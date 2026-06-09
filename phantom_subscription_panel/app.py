@@ -119,16 +119,27 @@ async def admin_save_settings(
     config_count_label: str = Form(...),
     subscription_title: str = Form(...),
     copy_button_text: str = Form(...),
+    copy_success_text: str = Form(...),
     qr_button_text: str = Form(...),
     apps_title: str = Form(...),
+    apps_help_text: str = Form(...),
     v2rayng_button_text: str = Form(...),
     hiddify_button_text: str = Form(...),
     streisand_button_text: str = Form(...),
     happ_button_text: str = Form(...),
     channel_button_text: str = Form(...),
+    copy_button_color: str = Form(...),
+    qr_button_color: str = Form(...),
+    v2rayng_button_color: str = Form(...),
+    hiddify_button_color: str = Form(...),
+    streisand_button_color: str = Form(...),
+    happ_button_color: str = Form(...),
+    channel_button_color: str = Form(...),
     configs_title: str = Form(...),
     config_copy_button_text: str = Form(...),
     config_qr_button_text: str = Form(...),
+    config_copy_button_color: str = Form(...),
+    config_qr_button_color: str = Form(...),
     empty_configs_text: str = Form(...),
     show_quick_connect: str | None = Form(default=None),
     show_channel_button: str | None = Form(default=None),
@@ -156,16 +167,27 @@ async def admin_save_settings(
         config_count_label=config_count_label.strip() or "تعداد کانفیگ",
         subscription_title=subscription_title.strip() or "لینک اشتراک",
         copy_button_text=copy_button_text.strip() or "کپی لینک اشتراک",
+        copy_success_text=copy_success_text.strip() or "با موفقیت کپی شد",
         qr_button_text=qr_button_text.strip() or "QR",
         apps_title=apps_title.strip() or "اتصال سریع",
+        apps_help_text=apps_help_text.strip() or "بر روی اسم برنامه‌ای که نصب دارید بزنید تا به صورت خودکار داخل برنامه اضافه شود.",
         v2rayng_button_text=v2rayng_button_text.strip() or "V2RayNG",
         hiddify_button_text=hiddify_button_text.strip() or "Hiddify",
         streisand_button_text=streisand_button_text.strip() or "Streisand",
         happ_button_text=happ_button_text.strip() or "HAPP",
         channel_button_text=channel_button_text.strip() or "کانال پشتیبانی",
+        copy_button_color=_normalize_color(copy_button_color, "#426df8"),
+        qr_button_color=_normalize_color(qr_button_color, "#334155"),
+        v2rayng_button_color=_normalize_color(v2rayng_button_color, "#334155"),
+        hiddify_button_color=_normalize_color(hiddify_button_color, "#334155"),
+        streisand_button_color=_normalize_color(streisand_button_color, "#334155"),
+        happ_button_color=_normalize_color(happ_button_color, "#334155"),
+        channel_button_color=_normalize_color(channel_button_color, "#426df8"),
         configs_title=configs_title.strip() or "کانفیگ‌های اشتراک",
         config_copy_button_text=config_copy_button_text.strip() or "کپی",
         config_qr_button_text=config_qr_button_text.strip() or "QR",
+        config_copy_button_color=_normalize_color(config_copy_button_color, "#426df8"),
+        config_qr_button_color=_normalize_color(config_qr_button_color, "#334155"),
         empty_configs_text=empty_configs_text.strip() or "کانفیگ قابل نمایش دریافت نشد.",
         show_quick_connect=show_quick_connect == "on",
         show_channel_button=show_channel_button == "on",
@@ -447,11 +469,11 @@ def _render_subscription_page(config: Config, upstream: dict) -> str:
     config_rows = ""
     for index, line in enumerate(upstream["lines"][:20], 1):
         copy_button = (
-            f"<button class='mini-btn' onclick='copyText({html.escape(json.dumps(line), quote=True)});event.stopPropagation()'>{html.escape(panel.config_copy_button_text)}</button>"
+            f"<button class='mini-btn' style='background:{panel.config_copy_button_color}' onclick='copyText({html.escape(json.dumps(line), quote=True)});event.stopPropagation()'>{html.escape(panel.config_copy_button_text)}</button>"
             if panel.show_config_copy else ""
         )
         qr_button = (
-            f"<button class='mini-btn secondary' onclick='showQR({html.escape(json.dumps(line), quote=True)});event.stopPropagation()'>{html.escape(panel.config_qr_button_text)}</button>"
+            f"<button class='mini-btn' style='background:{panel.config_qr_button_color}' onclick='showQR({html.escape(json.dumps(line), quote=True)});event.stopPropagation()'>{html.escape(panel.config_qr_button_text)}</button>"
             if panel.show_config_qr else ""
         )
         config_rows += (
@@ -468,14 +490,15 @@ def _render_subscription_page(config: Config, upstream: dict) -> str:
     quick_connect = ""
     if panel.show_quick_connect:
         quick_connect = (
-            f"<div class='section-title spaced'>{html.escape(panel.apps_title)}</div><div class='btn-grid'>"
-            f"<a class='link-btn' href='v2rayng://install-config?url={quote(public_url, safe='')}'>{html.escape(panel.v2rayng_button_text)}</a>"
-            f"<a class='link-btn secondary' href='hiddify://import/{quote(public_url, safe='')}'>{html.escape(panel.hiddify_button_text)}</a>"
-            f"<a class='link-btn secondary' href='streisand://import/{quote(public_url, safe='')}'>{html.escape(panel.streisand_button_text)}</a>"
-            f"<a class='link-btn' href='/connect/happ/{quote(config.public_sub_token, safe='')}'>{html.escape(panel.happ_button_text)}</a></div>"
+            f"<div class='section-title spaced'>{html.escape(panel.apps_title)}</div>"
+            f"<p class='apps-help'>{html.escape(panel.apps_help_text)}</p><div class='btn-grid'>"
+            f"<a class='link-btn' style='background:{panel.v2rayng_button_color}' href='v2rayng://install-config?url={quote(public_url, safe='')}'>{html.escape(panel.v2rayng_button_text)}</a>"
+            f"<a class='link-btn' style='background:{panel.hiddify_button_color}' href='hiddify://import/{quote(public_url, safe='')}'>{html.escape(panel.hiddify_button_text)}</a>"
+            f"<a class='link-btn' style='background:{panel.streisand_button_color}' href='streisand://import/{quote(public_url, safe='')}'>{html.escape(panel.streisand_button_text)}</a>"
+            f"<a class='link-btn' style='background:{panel.happ_button_color}' href='/connect/happ/{quote(config.public_sub_token, safe='')}'>{html.escape(panel.happ_button_text)}</a></div>"
         )
     channel_button = (
-        f"<a class='link-btn channel-btn' href='{html.escape(channel_url)}'>{html.escape(panel.channel_button_text)}</a>"
+        f"<a class='link-btn channel-btn' style='background:{panel.channel_button_color}' href='{html.escape(channel_url)}'>{html.escape(panel.channel_button_text)}</a>"
         if panel.show_channel_button else ""
     )
     return f"""<!doctype html>
@@ -484,14 +507,14 @@ def _render_subscription_page(config: Config, upstream: dict) -> str:
 <link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
-*{{box-sizing:border-box;letter-spacing:0}}:root{{--primary:{panel.primary_color};--accent:{panel.accent_color};--bg:{panel.background_color};--card:{panel.card_color};--text:{panel.text_color};--muted:{panel.muted_text_color};--secondary:{panel.secondary_button_color};--border:color-mix(in srgb,var(--text) 18%,transparent)}}body{{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:Vazirmatn,Tahoma,sans-serif}}.background{{position:fixed;inset:0;z-index:-1;background:linear-gradient(145deg,var(--bg),color-mix(in srgb,var(--primary) 16%,var(--bg)))}}.container{{max-width:800px;margin:auto;padding:28px 16px 48px}}.glass-card{{background:color-mix(in srgb,var(--card) 92%,transparent);border:1px solid var(--border);backdrop-filter:blur(14px);border-radius:8px;padding:20px;margin-bottom:18px;box-shadow:0 20px 50px rgba(0,0,0,.2)}}.header{{display:flex;justify-content:space-between;gap:16px;align-items:center}}h1{{font-size:24px;margin:0 0 6px;overflow-wrap:anywhere}}p{{color:var(--muted);line-height:1.9;margin:0}}.status{{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 40%,transparent);padding:8px 12px;border-radius:8px;white-space:nowrap}}.stats-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:18px}}.stat-card{{background:color-mix(in srgb,var(--text) 6%,transparent);border:1px solid var(--border);border-radius:8px;padding:16px}}.stat-label{{color:var(--muted);font-size:13px}}.stat-value{{font-size:19px;font-weight:800;margin-top:6px}}.progress{{height:8px;background:color-mix(in srgb,var(--text) 10%,transparent);border-radius:4px;overflow:hidden;margin-top:12px}}.progress i{{display:block;height:100%;width:{percent}%;background:var(--primary)}}.subscription-container{{display:flex;gap:10px;align-items:stretch}}.subscription-url{{direction:ltr;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;padding:13px;background:color-mix(in srgb,var(--text) 6%,transparent);border:1px solid var(--border);border-radius:8px;color:var(--muted)}}button,.link-btn{{border:0;border-radius:8px;padding:12px 15px;background:var(--primary);color:#fff;font:inherit;font-weight:700;cursor:pointer;text-decoration:none;text-align:center}}.btn-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}}.secondary{{background:var(--secondary);border:1px solid var(--border)}}.channel-btn{{display:block;margin-top:10px}}.section-title{{font-weight:800;margin-bottom:12px}}.spaced{{margin-top:20px}}.proxy-list{{display:grid;gap:8px}}.proxy-item{{direction:ltr;text-align:left;background:color-mix(in srgb,var(--text) 5%,transparent);padding:10px;border-radius:8px;display:flex;gap:10px;align-items:center;overflow:hidden}}.proxy-copy{{min-width:0;flex:1}}.proxy-item strong{{direction:rtl;text-align:right;display:block;margin-bottom:4px}}.proxy-item span{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-family:monospace}}.proxy-actions{{display:flex;gap:6px}}.mini-btn{{padding:7px 10px;font-size:12px;white-space:nowrap}}.empty,.foot{{color:var(--muted);text-align:center}}#qr-modal{{display:none;position:fixed;inset:0;background:rgba(2,6,23,.9);align-items:center;justify-content:center;z-index:5}}#qr-modal.open{{display:flex}}#qrcode{{background:#fff;padding:16px;border-radius:8px}}@media(max-width:600px){{.header,.subscription-container{{flex-direction:column;align-items:stretch}}.stats-grid,.btn-grid{{grid-template-columns:1fr}}.proxy-item{{align-items:stretch;flex-direction:column}}.proxy-actions{{direction:rtl}}}}
+*{{box-sizing:border-box;letter-spacing:0}}:root{{--primary:{panel.primary_color};--accent:{panel.accent_color};--bg:{panel.background_color};--card:{panel.card_color};--text:{panel.text_color};--muted:{panel.muted_text_color};--secondary:{panel.secondary_button_color};--border:color-mix(in srgb,var(--text) 18%,transparent)}}body{{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:Vazirmatn,Tahoma,sans-serif}}.background{{position:fixed;inset:0;z-index:-1;background:linear-gradient(145deg,var(--bg),color-mix(in srgb,var(--primary) 16%,var(--bg)))}}.container{{max-width:800px;margin:auto;padding:28px 16px 48px}}.glass-card{{background:color-mix(in srgb,var(--card) 92%,transparent);border:1px solid var(--border);backdrop-filter:blur(14px);border-radius:8px;padding:20px;margin-bottom:18px;box-shadow:0 20px 50px rgba(0,0,0,.2)}}.header{{display:flex;justify-content:space-between;gap:16px;align-items:center}}.header-copy{{min-width:0}}h1{{font-size:24px;margin:0 0 6px;overflow-wrap:anywhere}}p{{color:var(--muted);line-height:1.9;margin:0}}.status{{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 40%,transparent);padding:8px 12px;border-radius:8px;white-space:nowrap;flex:0 0 auto}}.stats-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:18px}}.stat-card{{background:color-mix(in srgb,var(--text) 6%,transparent);border:1px solid var(--border);border-radius:8px;padding:16px}}.stat-label{{color:var(--muted);font-size:13px}}.stat-value{{font-size:19px;font-weight:800;margin-top:6px}}.progress{{height:8px;background:color-mix(in srgb,var(--text) 10%,transparent);border-radius:4px;overflow:hidden;margin-top:12px}}.progress i{{display:block;height:100%;width:{percent}%;background:var(--primary)}}.subscription-container{{display:flex;gap:10px;align-items:stretch}}.subscription-url{{direction:ltr;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;padding:13px;background:color-mix(in srgb,var(--text) 6%,transparent);border:1px solid var(--border);border-radius:8px;color:var(--muted)}}button,.link-btn{{border:0;border-radius:8px;padding:12px 15px;background:var(--primary);color:#fff;font:inherit;font-weight:700;cursor:pointer;text-decoration:none;text-align:center}}.btn-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}}.secondary{{background:var(--secondary);border:1px solid var(--border)}}.channel-btn{{display:block;margin-top:10px}}.section-title{{font-weight:800;margin-bottom:12px}}.spaced{{margin-top:20px;margin-bottom:4px}}.apps-help{{font-size:13px;margin-bottom:12px}}.proxy-list{{display:grid;gap:8px}}.proxy-item{{direction:ltr;text-align:left;background:color-mix(in srgb,var(--text) 5%,transparent);padding:10px;border-radius:8px;display:flex;gap:10px;align-items:center;overflow:hidden}}.proxy-copy{{min-width:0;flex:1}}.proxy-item strong{{direction:rtl;text-align:right;display:block;margin-bottom:4px}}.proxy-item span{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-family:monospace}}.proxy-actions{{display:flex;gap:6px}}.mini-btn{{padding:7px 10px;font-size:12px;white-space:nowrap}}.empty,.foot{{color:var(--muted);text-align:center}}#toast{{position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);background:var(--text);color:var(--bg);padding:10px 16px;border-radius:8px;font-weight:700;opacity:0;visibility:hidden;transition:.2s;z-index:10;box-shadow:0 10px 30px rgba(0,0,0,.3);white-space:nowrap}}#toast.show{{opacity:1;visibility:visible;transform:translate(-50%,0)}}#qr-modal{{display:none;position:fixed;inset:0;background:rgba(2,6,23,.9);align-items:center;justify-content:center;z-index:5}}#qr-modal.open{{display:flex}}#qrcode{{background:#fff;padding:16px;border-radius:8px}}@media(max-width:600px){{.header{{flex-direction:column;align-items:flex-start;gap:10px}}.header-copy{{width:100%}}.status{{align-self:flex-start;padding:6px 10px}}.subscription-container{{flex-direction:column;align-items:stretch}}.stats-grid,.btn-grid{{grid-template-columns:1fr}}.proxy-item{{align-items:stretch;flex-direction:column}}.proxy-actions{{direction:rtl}}}}
 </style></head><body><div class="background"></div><main class="container">
-<section class="glass-card"><div class="header"><div><h1>{title}</h1><p>{html.escape(panel.hero_text)}</p></div><div class="status">{html.escape(panel.active_status_text)}</div></div>
+<section class="glass-card"><div class="header"><div class="header-copy"><h1>{title}</h1><p>{html.escape(panel.hero_text)}</p></div><div class="status">{html.escape(panel.active_status_text)}</div></div>
 <div class="stats-grid"><div class="stat-card"><div class="stat-label">{html.escape(panel.used_label)}</div><div class="stat-value">{_format_bytes(used)}</div><div class="progress"><i></i></div></div><div class="stat-card"><div class="stat-label">{html.escape(panel.remaining_label)}</div><div class="stat-value">{_format_bytes(remaining)}</div></div><div class="stat-card"><div class="stat-label">{html.escape(panel.expiry_label)}</div><div class="stat-value">{expire_text}</div></div><div class="stat-card"><div class="stat-label">{html.escape(panel.config_count_label)}</div><div class="stat-value">{len(upstream['lines'])}</div></div></div></section>
-<section class="glass-card"><div class="section-title">{html.escape(panel.subscription_title)}</div><div class="subscription-container"><div class="subscription-url">{html.escape(public_url)}</div><button onclick="copyText(link)">{html.escape(panel.copy_button_text)}</button><button class="secondary" onclick="showQR(link)">{html.escape(panel.qr_button_text)}</button></div>
+<section class="glass-card"><div class="section-title">{html.escape(panel.subscription_title)}</div><div class="subscription-container"><div class="subscription-url">{html.escape(public_url)}</div><button style="background:{panel.copy_button_color}" onclick="copyText(link)">{html.escape(panel.copy_button_text)}</button><button style="background:{panel.qr_button_color}" onclick="showQR(link)">{html.escape(panel.qr_button_text)}</button></div>
 {quick_connect}{channel_button}</section>
-{preview}<div class="foot">{html.escape(panel.support_text)}</div></main><div id="qr-modal" onclick="this.classList.remove('open')"><div id="qrcode"></div></div>
-<script>const link={json.dumps(public_url)};function copyText(value){{navigator.clipboard.writeText(value)}}function showQR(value){{const modal=document.getElementById('qr-modal');const box=document.getElementById('qrcode');box.innerHTML='';new QRCode(box,{{text:value,width:220,height:220}});modal.classList.add('open')}}</script></body></html>"""
+{preview}<div class="foot">{html.escape(panel.support_text)}</div></main><div id="toast" role="status">{html.escape(panel.copy_success_text)}</div><div id="qr-modal" onclick="this.classList.remove('open')"><div id="qrcode"></div></div>
+<script>const link={json.dumps(public_url)};let toastTimer;async function copyText(value){{try{{await navigator.clipboard.writeText(value)}}catch(error){{const area=document.createElement('textarea');area.value=value;document.body.appendChild(area);area.select();document.execCommand('copy');area.remove()}}const toast=document.getElementById('toast');toast.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.classList.remove('show'),1800)}}function showQR(value){{const modal=document.getElementById('qr-modal');const box=document.getElementById('qrcode');box.innerHTML='';new QRCode(box,{{text:value,width:220,height:220}});modal.classList.add('open')}}</script></body></html>"""
 
 
 async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "") -> str:
@@ -523,11 +546,17 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
 <label>عنوان مصرف‌شده<input name="used_label" value="{html.escape(panel.used_label)}"></label><label>عنوان باقی‌مانده<input name="remaining_label" value="{html.escape(panel.remaining_label)}"></label>
 <label>عنوان انقضا<input name="expiry_label" value="{html.escape(panel.expiry_label)}"></label><label>عنوان تعداد کانفیگ<input name="config_count_label" value="{html.escape(panel.config_count_label)}"></label>
 <label>عنوان لینک اشتراک<input name="subscription_title" value="{html.escape(panel.subscription_title)}"></label><label>متن دکمه کپی لینک<input name="copy_button_text" value="{html.escape(panel.copy_button_text)}"></label>
-<label>متن دکمه QR لینک<input name="qr_button_text" value="{html.escape(panel.qr_button_text)}"></label><label>عنوان اتصال سریع<input name="apps_title" value="{html.escape(panel.apps_title)}"></label>
+<label>پیام موفقیت کپی<input name="copy_success_text" value="{html.escape(panel.copy_success_text)}"></label><label>متن دکمه QR لینک<input name="qr_button_text" value="{html.escape(panel.qr_button_text)}"></label>
+<label>رنگ دکمه کپی لینک<input name="copy_button_color" type="color" value="{panel.copy_button_color}"></label><label>رنگ دکمه QR لینک<input name="qr_button_color" type="color" value="{panel.qr_button_color}"></label>
+<label>عنوان اتصال سریع<input name="apps_title" value="{html.escape(panel.apps_title)}"></label><label class="wide">متن راهنمای اتصال سریع<input name="apps_help_text" value="{html.escape(panel.apps_help_text)}"></label>
 <label>متن V2RayNG<input name="v2rayng_button_text" value="{html.escape(panel.v2rayng_button_text)}"></label><label>متن Hiddify<input name="hiddify_button_text" value="{html.escape(panel.hiddify_button_text)}"></label>
 <label>متن Streisand<input name="streisand_button_text" value="{html.escape(panel.streisand_button_text)}"></label><label>متن HAPP<input name="happ_button_text" value="{html.escape(panel.happ_button_text)}"></label>
-<label>متن دکمه کانال<input name="channel_button_text" value="{html.escape(panel.channel_button_text)}"></label><label>عنوان فهرست کانفیگ‌ها<input name="configs_title" value="{html.escape(panel.configs_title)}"></label>
+<label>رنگ V2RayNG<input name="v2rayng_button_color" type="color" value="{panel.v2rayng_button_color}"></label><label>رنگ Hiddify<input name="hiddify_button_color" type="color" value="{panel.hiddify_button_color}"></label>
+<label>رنگ Streisand<input name="streisand_button_color" type="color" value="{panel.streisand_button_color}"></label><label>رنگ HAPP<input name="happ_button_color" type="color" value="{panel.happ_button_color}"></label>
+<label>متن دکمه کانال<input name="channel_button_text" value="{html.escape(panel.channel_button_text)}"></label><label>رنگ دکمه کانال<input name="channel_button_color" type="color" value="{panel.channel_button_color}"></label>
+<label>عنوان فهرست کانفیگ‌ها<input name="configs_title" value="{html.escape(panel.configs_title)}"></label><label>رنگ کپی هر کانفیگ<input name="config_copy_button_color" type="color" value="{panel.config_copy_button_color}"></label>
 <label>متن کپی هر کانفیگ<input name="config_copy_button_text" value="{html.escape(panel.config_copy_button_text)}"></label><label>متن QR هر کانفیگ<input name="config_qr_button_text" value="{html.escape(panel.config_qr_button_text)}"></label>
+<label>رنگ QR هر کانفیگ<input name="config_qr_button_color" type="color" value="{panel.config_qr_button_color}"></label>
 <label class="wide">متن نبود کانفیگ<input name="empty_configs_text" value="{html.escape(panel.empty_configs_text)}"></label>
 <label class="toggle"><input name="show_quick_connect" type="checkbox" {checked['quick']}> نمایش اتصال سریع</label>
 <label class="toggle"><input name="show_channel_button" type="checkbox" {checked['channel']}> نمایش دکمه کانال</label>
