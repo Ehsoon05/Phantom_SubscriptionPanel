@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import html
@@ -295,16 +296,26 @@ async def _fetch_upstream(url: str) -> dict:
         "Accept": "text/plain, application/octet-stream, */*",
         "Cache-Control": "no-cache",
     }
-    try:
-        async with httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=settings.request_timeout_seconds,
-            verify=settings.upstream_verify_tls,
-        ) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"Upstream subscription is unavailable: {exc}") from exc
+    last_error: httpx.HTTPError | None = None
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=settings.request_timeout_seconds,
+        verify=settings.upstream_verify_tls,
+    ) as client:
+        for attempt in range(3):
+            try:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                break
+            except httpx.HTTPError as exc:
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.4 * (attempt + 1))
+        else:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Upstream subscription is unavailable: {last_error}",
+            ) from last_error
 
     body = response.content
     if _looks_like_html(body):
