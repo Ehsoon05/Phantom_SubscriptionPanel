@@ -7,11 +7,11 @@ import json
 import re
 import secrets
 from datetime import datetime, timezone
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response, status
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -104,12 +104,36 @@ async def admin_save_settings(
     primary_color: str = Form(...),
     accent_color: str = Form(...),
     background_color: str = Form(...),
+    card_color: str = Form(...),
+    text_color: str = Form(...),
+    muted_text_color: str = Form(...),
+    secondary_button_color: str = Form(...),
     channel_handle: str = Form(...),
     hero_text: str = Form(...),
     support_text: str = Form(...),
+    active_status_text: str = Form(...),
+    used_label: str = Form(...),
+    remaining_label: str = Form(...),
+    expiry_label: str = Form(...),
+    config_count_label: str = Form(...),
+    subscription_title: str = Form(...),
     copy_button_text: str = Form(...),
+    qr_button_text: str = Form(...),
     apps_title: str = Form(...),
+    v2rayng_button_text: str = Form(...),
+    hiddify_button_text: str = Form(...),
+    streisand_button_text: str = Form(...),
+    happ_button_text: str = Form(...),
+    channel_button_text: str = Form(...),
+    configs_title: str = Form(...),
+    config_copy_button_text: str = Form(...),
+    config_qr_button_text: str = Form(...),
+    empty_configs_text: str = Form(...),
+    show_quick_connect: str | None = Form(default=None),
+    show_channel_button: str | None = Form(default=None),
     show_config_preview: str | None = Form(default=None),
+    show_config_copy: str | None = Form(default=None),
+    show_config_qr: str | None = Form(default=None),
     _: str = Depends(_require_admin),
 ) -> str:
     panel = PanelSettings(
@@ -117,12 +141,36 @@ async def admin_save_settings(
         primary_color=_normalize_color(primary_color, "#426df8"),
         accent_color=_normalize_color(accent_color, "#22c55e"),
         background_color=_normalize_color(background_color, "#0f172a"),
+        card_color=_normalize_color(card_color, "#1e293b"),
+        text_color=_normalize_color(text_color, "#ffffff"),
+        muted_text_color=_normalize_color(muted_text_color, "#cbd5e1"),
+        secondary_button_color=_normalize_color(secondary_button_color, "#334155"),
         channel_handle=channel_handle.strip() or "@PhantomHubs",
         hero_text=hero_text.strip(),
         support_text=support_text.strip(),
+        active_status_text=active_status_text.strip() or "فعال",
+        used_label=used_label.strip() or "حجم مصرف‌شده",
+        remaining_label=remaining_label.strip() or "حجم باقی‌مانده",
+        expiry_label=expiry_label.strip() or "تاریخ انقضا",
+        config_count_label=config_count_label.strip() or "تعداد کانفیگ",
+        subscription_title=subscription_title.strip() or "لینک اشتراک",
         copy_button_text=copy_button_text.strip() or "کپی لینک اشتراک",
+        qr_button_text=qr_button_text.strip() or "QR",
         apps_title=apps_title.strip() or "اتصال سریع",
+        v2rayng_button_text=v2rayng_button_text.strip() or "V2RayNG",
+        hiddify_button_text=hiddify_button_text.strip() or "Hiddify",
+        streisand_button_text=streisand_button_text.strip() or "Streisand",
+        happ_button_text=happ_button_text.strip() or "HAPP",
+        channel_button_text=channel_button_text.strip() or "کانال پشتیبانی",
+        configs_title=configs_title.strip() or "کانفیگ‌های اشتراک",
+        config_copy_button_text=config_copy_button_text.strip() or "کپی",
+        config_qr_button_text=config_qr_button_text.strip() or "QR",
+        empty_configs_text=empty_configs_text.strip() or "کانفیگ قابل نمایش دریافت نشد.",
+        show_quick_connect=show_quick_connect == "on",
+        show_channel_button=show_channel_button == "on",
         show_config_preview=show_config_preview == "on",
+        show_config_copy=show_config_copy == "on",
+        show_config_qr=show_config_qr == "on",
     )
     save_panel_settings(panel)
     return await _render_admin(panel, notice="تنظیمات ظاهری ذخیره شد.")
@@ -169,11 +217,7 @@ async def admin_delete_subscription(config_id: int, _: str = Depends(_require_ad
 
 @app.post("/internal/configs", response_class=PlainTextResponse)
 async def sync_config(payload: ConfigSyncPayload, authorization: str | None = Header(default=None)) -> str:
-    if not settings.sync_token:
-        raise HTTPException(status_code=403, detail="PANEL_SYNC_TOKEN is not configured")
-    expected = f"Bearer {settings.sync_token}"
-    if not authorization or not secrets.compare_digest(authorization, expected):
-        raise HTTPException(status_code=401, detail="Invalid sync token")
+    _require_sync_token(authorization)
     async with async_session() as session:
         result = await session.execute(select(Config).where(Config.public_sub_token == payload.token))
         config = result.scalar_one_or_none()
@@ -187,6 +231,56 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
         config.service_name = payload.service_name
         await session.commit()
     return "ok"
+
+
+@app.get("/internal/configs/{token}/metadata", response_class=JSONResponse)
+async def config_metadata(token: str, authorization: str | None = Header(default=None)) -> dict:
+    _require_sync_token(authorization)
+    config = await _config_for_token(token)
+    if not config:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    upstream = await _fetch_upstream(config.sub_link)
+    usage = upstream["usage"]
+    used = usage.get("upload", 0) + usage.get("download", 0)
+    total = usage.get("total", 0) or max(config.volume_gb, 0) * 1024**3
+    return {
+        "title": upstream["title"],
+        "upload": usage.get("upload", 0),
+        "download": usage.get("download", 0),
+        "used": used,
+        "total": total,
+        "remaining": max(total - used, 0) if total else 0,
+        "expire": usage.get("expire"),
+        "config_count": len(upstream["lines"]),
+        "status": "active",
+        "public_url": f"{settings.public_base_url}/token/{quote(token, safe='')}",
+    }
+
+
+@app.get("/connect/happ/{token}")
+async def connect_happ(token: str) -> RedirectResponse:
+    config = await _config_for_token(token)
+    if not config:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    public_url = f"{settings.public_base_url}/token/{quote(token, safe='')}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post("https://crypto.happ.su/api-v2.php", json={"url": public_url})
+            response.raise_for_status()
+            encrypted_link = response.json().get("encrypted_link", "")
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="HAPP quick connect is unavailable") from exc
+    if not isinstance(encrypted_link, str) or not encrypted_link.startswith("happ://"):
+        raise HTTPException(status_code=502, detail="HAPP returned an invalid link")
+    return RedirectResponse(encrypted_link)
+
+
+def _require_sync_token(authorization: str | None) -> None:
+    if not settings.sync_token:
+        raise HTTPException(status_code=403, detail="PANEL_SYNC_TOKEN is not configured")
+    expected = f"Bearer {settings.sync_token}"
+    if not authorization or not secrets.compare_digest(authorization, expected):
+        raise HTTPException(status_code=401, detail="Invalid sync token")
 
 
 async def _config_for_token(token: str) -> Config | None:
@@ -221,6 +315,7 @@ async def _fetch_upstream(url: str) -> dict:
         "forward_headers": {name: response.headers[name] for name in FORWARDED_HEADERS if name in response.headers},
         "lines": _subscription_lines(body),
         "usage": _parse_subscription_userinfo(response.headers.get("subscription-userinfo", "")),
+        "title": _upstream_title(response.headers),
     }
 
 
@@ -283,6 +378,39 @@ def _parse_subscription_userinfo(value: str) -> dict[str, int]:
     return values
 
 
+def _decode_profile_title(value: str) -> str:
+    value = value.strip()
+    if not value:
+        return ""
+    if value.lower().startswith("base64:"):
+        encoded = value.split(":", 1)[1].strip()
+        try:
+            return base64.b64decode(encoded + "=" * (-len(encoded) % 4)).decode("utf-8").strip()
+        except (binascii.Error, UnicodeDecodeError, ValueError):
+            return ""
+    return unquote(value).strip().strip("\"'")
+
+
+def _content_disposition_title(value: str) -> str:
+    match = re.search(r"filename\*?=(?:UTF-8''|)(?:\"([^\"]+)\"|([^;]+))", value, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    return unquote((match.group(1) or match.group(2) or "").strip()).strip("\"'")
+
+
+def _upstream_title(headers: httpx.Headers) -> str:
+    profile_title = _decode_profile_title(headers.get("profile-title", ""))
+    disposition_title = _content_disposition_title(headers.get("content-disposition", ""))
+    if profile_title and profile_title.casefold() not in {"subscription", "sub"}:
+        return profile_title
+    return disposition_title or profile_title or "Subscription"
+
+
+def _config_name(line: str, index: int) -> str:
+    fragment = unquote(urlparse(line).fragment).strip()
+    return fragment or f"کانفیگ {index}"
+
+
 def _format_bytes(value: int | None) -> str:
     if not value:
         return "نامحدود"
@@ -305,29 +433,54 @@ def _render_subscription_page(config: Config, upstream: dict) -> str:
     expire = usage.get("expire")
     expire_text = datetime.fromtimestamp(expire, timezone.utc).strftime("%Y-%m-%d") if expire else "نامحدود"
     public_url = f"{settings.public_base_url}/token/{quote(config.public_sub_token, safe='')}"
-    config_rows = "".join(
-        f"<div class='proxy-item'><span>{html.escape(line[:180])}</span></div>" for line in upstream["lines"][:10]
-    )
+    config_rows = ""
+    for index, line in enumerate(upstream["lines"][:20], 1):
+        copy_button = (
+            f"<button class='mini-btn' onclick='copyText({html.escape(json.dumps(line), quote=True)});event.stopPropagation()'>{html.escape(panel.config_copy_button_text)}</button>"
+            if panel.show_config_copy else ""
+        )
+        qr_button = (
+            f"<button class='mini-btn secondary' onclick='showQR({html.escape(json.dumps(line), quote=True)});event.stopPropagation()'>{html.escape(panel.config_qr_button_text)}</button>"
+            if panel.show_config_qr else ""
+        )
+        config_rows += (
+            "<div class='proxy-item'><div class='proxy-copy'>"
+            f"<strong>{html.escape(_config_name(line, index))}</strong><span>{html.escape(line)}</span></div>"
+            f"<div class='proxy-actions'>{copy_button}{qr_button}</div></div>"
+        )
     preview = (
-        f"<section class='glass-card'><div class='section-title'>کانفیگ‌های اشتراک</div><div class='proxy-list'>{config_rows or '<div class=\"empty\">کانفیگ قابل نمایش دریافت نشد.</div>'}</div></section>"
+        f"<section class='glass-card'><div class='section-title'>{html.escape(panel.configs_title)}</div><div class='proxy-list'>{config_rows or f'<div class=\"empty\">{html.escape(panel.empty_configs_text)}</div>'}</div></section>"
         if panel.show_config_preview else ""
     )
     channel_url = f"https://t.me/{panel.channel_handle.lstrip('@')}"
-    title = html.escape(config.service_name or f"{panel.brand_name} {config.volume_gb}GB")
+    title = html.escape(upstream["title"])
+    quick_connect = ""
+    if panel.show_quick_connect:
+        quick_connect = (
+            f"<div class='section-title spaced'>{html.escape(panel.apps_title)}</div><div class='btn-grid'>"
+            f"<a class='link-btn' href='v2rayng://install-config?url={quote(public_url, safe='')}'>{html.escape(panel.v2rayng_button_text)}</a>"
+            f"<a class='link-btn secondary' href='hiddify://import/{quote(public_url, safe='')}'>{html.escape(panel.hiddify_button_text)}</a>"
+            f"<a class='link-btn secondary' href='streisand://import/{quote(public_url, safe='')}'>{html.escape(panel.streisand_button_text)}</a>"
+            f"<a class='link-btn' href='/connect/happ/{quote(config.public_sub_token, safe='')}'>{html.escape(panel.happ_button_text)}</a></div>"
+        )
+    channel_button = (
+        f"<a class='link-btn channel-btn' href='{html.escape(channel_url)}'>{html.escape(panel.channel_button_text)}</a>"
+        if panel.show_channel_button else ""
+    )
     return f"""<!doctype html>
 <html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
 <link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
-*{{box-sizing:border-box;letter-spacing:0}}:root{{--primary:{panel.primary_color};--accent:{panel.accent_color};--bg:{panel.background_color};--glass:rgba(255,255,255,.09);--border:rgba(255,255,255,.18)}}body{{margin:0;min-height:100vh;background:var(--bg);color:#fff;font-family:Vazirmatn,Tahoma,sans-serif}}.background{{position:fixed;inset:0;z-index:-1;background:radial-gradient(circle at 10% 10%,color-mix(in srgb,var(--primary) 35%,transparent),transparent 35%),radial-gradient(circle at 90% 90%,rgba(34,197,94,.18),transparent 36%)}}.container{{max-width:800px;margin:auto;padding:28px 16px 48px}}.glass-card{{background:var(--glass);border:1px solid var(--border);backdrop-filter:blur(14px);border-radius:8px;padding:20px;margin-bottom:18px;box-shadow:0 20px 50px rgba(0,0,0,.2)}}.header{{display:flex;justify-content:space-between;gap:16px;align-items:center}}h1{{font-size:24px;margin:0 0 6px}}p{{color:#cbd5e1;line-height:1.9;margin:0}}.status{{background:rgba(34,197,94,.15);color:#86efac;border:1px solid rgba(34,197,94,.35);padding:8px 12px;border-radius:8px;white-space:nowrap}}.stats-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:18px}}.stat-card{{background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:8px;padding:16px}}.stat-label{{color:#94a3b8;font-size:13px}}.stat-value{{font-size:19px;font-weight:800;margin-top:6px}}.progress{{height:8px;background:rgba(255,255,255,.1);border-radius:4px;overflow:hidden;margin-top:12px}}.progress i{{display:block;height:100%;width:{percent}%;background:var(--primary)}}.subscription-container{{display:flex;gap:10px;align-items:stretch}}.subscription-url{{direction:ltr;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;padding:13px;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:8px;color:#cbd5e1}}button,.link-btn{{border:0;border-radius:8px;padding:12px 15px;background:var(--primary);color:#fff;font:inherit;font-weight:700;cursor:pointer;text-decoration:none;text-align:center}}.btn-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}}.secondary{{background:rgba(255,255,255,.08);border:1px solid var(--border)}}.section-title{{font-weight:800;margin-bottom:12px}}.proxy-list{{display:grid;gap:8px}}.proxy-item{{direction:ltr;text-align:left;background:rgba(255,255,255,.05);padding:10px;border-radius:8px;overflow:hidden}}.proxy-item span{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#cbd5e1;font-family:monospace}}.empty,.foot{{color:#94a3b8;text-align:center}}#qr-modal{{display:none;position:fixed;inset:0;background:rgba(2,6,23,.9);align-items:center;justify-content:center;z-index:5}}#qr-modal.open{{display:flex}}#qrcode{{background:#fff;padding:16px;border-radius:8px}}@media(max-width:600px){{.header,.subscription-container{{flex-direction:column;align-items:stretch}}.stats-grid,.btn-grid{{grid-template-columns:1fr}}}}
+*{{box-sizing:border-box;letter-spacing:0}}:root{{--primary:{panel.primary_color};--accent:{panel.accent_color};--bg:{panel.background_color};--card:{panel.card_color};--text:{panel.text_color};--muted:{panel.muted_text_color};--secondary:{panel.secondary_button_color};--border:color-mix(in srgb,var(--text) 18%,transparent)}}body{{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:Vazirmatn,Tahoma,sans-serif}}.background{{position:fixed;inset:0;z-index:-1;background:linear-gradient(145deg,var(--bg),color-mix(in srgb,var(--primary) 16%,var(--bg)))}}.container{{max-width:800px;margin:auto;padding:28px 16px 48px}}.glass-card{{background:color-mix(in srgb,var(--card) 92%,transparent);border:1px solid var(--border);backdrop-filter:blur(14px);border-radius:8px;padding:20px;margin-bottom:18px;box-shadow:0 20px 50px rgba(0,0,0,.2)}}.header{{display:flex;justify-content:space-between;gap:16px;align-items:center}}h1{{font-size:24px;margin:0 0 6px;overflow-wrap:anywhere}}p{{color:var(--muted);line-height:1.9;margin:0}}.status{{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 40%,transparent);padding:8px 12px;border-radius:8px;white-space:nowrap}}.stats-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:18px}}.stat-card{{background:color-mix(in srgb,var(--text) 6%,transparent);border:1px solid var(--border);border-radius:8px;padding:16px}}.stat-label{{color:var(--muted);font-size:13px}}.stat-value{{font-size:19px;font-weight:800;margin-top:6px}}.progress{{height:8px;background:color-mix(in srgb,var(--text) 10%,transparent);border-radius:4px;overflow:hidden;margin-top:12px}}.progress i{{display:block;height:100%;width:{percent}%;background:var(--primary)}}.subscription-container{{display:flex;gap:10px;align-items:stretch}}.subscription-url{{direction:ltr;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;padding:13px;background:color-mix(in srgb,var(--text) 6%,transparent);border:1px solid var(--border);border-radius:8px;color:var(--muted)}}button,.link-btn{{border:0;border-radius:8px;padding:12px 15px;background:var(--primary);color:#fff;font:inherit;font-weight:700;cursor:pointer;text-decoration:none;text-align:center}}.btn-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}}.secondary{{background:var(--secondary);border:1px solid var(--border)}}.channel-btn{{display:block;margin-top:10px}}.section-title{{font-weight:800;margin-bottom:12px}}.spaced{{margin-top:20px}}.proxy-list{{display:grid;gap:8px}}.proxy-item{{direction:ltr;text-align:left;background:color-mix(in srgb,var(--text) 5%,transparent);padding:10px;border-radius:8px;display:flex;gap:10px;align-items:center;overflow:hidden}}.proxy-copy{{min-width:0;flex:1}}.proxy-item strong{{direction:rtl;text-align:right;display:block;margin-bottom:4px}}.proxy-item span{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-family:monospace}}.proxy-actions{{display:flex;gap:6px}}.mini-btn{{padding:7px 10px;font-size:12px;white-space:nowrap}}.empty,.foot{{color:var(--muted);text-align:center}}#qr-modal{{display:none;position:fixed;inset:0;background:rgba(2,6,23,.9);align-items:center;justify-content:center;z-index:5}}#qr-modal.open{{display:flex}}#qrcode{{background:#fff;padding:16px;border-radius:8px}}@media(max-width:600px){{.header,.subscription-container{{flex-direction:column;align-items:stretch}}.stats-grid,.btn-grid{{grid-template-columns:1fr}}.proxy-item{{align-items:stretch;flex-direction:column}}.proxy-actions{{direction:rtl}}}}
 </style></head><body><div class="background"></div><main class="container">
-<section class="glass-card"><div class="header"><div><h1>{title}</h1><p>{html.escape(panel.hero_text)}</p></div><div class="status">فعال</div></div>
-<div class="stats-grid"><div class="stat-card"><div class="stat-label">حجم مصرف‌شده</div><div class="stat-value">{_format_bytes(used)}</div><div class="progress"><i></i></div></div><div class="stat-card"><div class="stat-label">حجم باقی‌مانده</div><div class="stat-value">{_format_bytes(remaining)}</div></div><div class="stat-card"><div class="stat-label">تاریخ انقضا</div><div class="stat-value">{expire_text}</div></div><div class="stat-card"><div class="stat-label">تعداد کانفیگ</div><div class="stat-value">{len(upstream['lines'])}</div></div></div></section>
-<section class="glass-card"><div class="section-title">لینک اشتراک</div><div class="subscription-container"><div class="subscription-url">{html.escape(public_url)}</div><button onclick="copyLink()">{html.escape(panel.copy_button_text)}</button><button class="secondary" onclick="showQR()">QR</button></div>
-<div class="section-title" style="margin-top:20px">{html.escape(panel.apps_title)}</div><div class="btn-grid"><a class="link-btn" href="v2rayng://install-config?url={quote(public_url, safe='')}">V2RayNG</a><a class="link-btn secondary" href="hiddify://import/{quote(public_url, safe='')}">Hiddify</a><a class="link-btn secondary" href="streisand://import/{quote(public_url, safe='')}">Streisand</a><a class="link-btn" href="{html.escape(channel_url)}">کانال {html.escape(panel.channel_handle)}</a></div></section>
+<section class="glass-card"><div class="header"><div><h1>{title}</h1><p>{html.escape(panel.hero_text)}</p></div><div class="status">{html.escape(panel.active_status_text)}</div></div>
+<div class="stats-grid"><div class="stat-card"><div class="stat-label">{html.escape(panel.used_label)}</div><div class="stat-value">{_format_bytes(used)}</div><div class="progress"><i></i></div></div><div class="stat-card"><div class="stat-label">{html.escape(panel.remaining_label)}</div><div class="stat-value">{_format_bytes(remaining)}</div></div><div class="stat-card"><div class="stat-label">{html.escape(panel.expiry_label)}</div><div class="stat-value">{expire_text}</div></div><div class="stat-card"><div class="stat-label">{html.escape(panel.config_count_label)}</div><div class="stat-value">{len(upstream['lines'])}</div></div></div></section>
+<section class="glass-card"><div class="section-title">{html.escape(panel.subscription_title)}</div><div class="subscription-container"><div class="subscription-url">{html.escape(public_url)}</div><button onclick="copyText(link)">{html.escape(panel.copy_button_text)}</button><button class="secondary" onclick="showQR(link)">{html.escape(panel.qr_button_text)}</button></div>
+{quick_connect}{channel_button}</section>
 {preview}<div class="foot">{html.escape(panel.support_text)}</div></main><div id="qr-modal" onclick="this.classList.remove('open')"><div id="qrcode"></div></div>
-<script>const link={json.dumps(public_url)};function copyLink(){{navigator.clipboard.writeText(link)}}function showQR(){{const modal=document.getElementById('qr-modal');const box=document.getElementById('qrcode');box.innerHTML='';new QRCode(box,{{text:link,width:220,height:220}});modal.classList.add('open')}}</script></body></html>"""
+<script>const link={json.dumps(public_url)};function copyText(value){{navigator.clipboard.writeText(value)}}function showQR(value){{const modal=document.getElementById('qr-modal');const box=document.getElementById('qrcode');box.innerHTML='';new QRCode(box,{{text:value,width:220,height:220}});modal.classList.add('open')}}</script></body></html>"""
 
 
 async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "") -> str:
@@ -339,9 +492,36 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
         for config in configs
     ) or "<tr><td colspan='5'>هنوز لینکی ثبت نشده است.</td></tr>"
     flash = f"<div class='notice'>{html.escape(notice)}</div>" if notice else f"<div class='error'>{html.escape(error)}</div>" if error else ""
-    checked = "checked" if panel.show_config_preview else ""
+    checked = {
+        "quick": "checked" if panel.show_quick_connect else "",
+        "channel": "checked" if panel.show_channel_button else "",
+        "preview": "checked" if panel.show_config_preview else "",
+        "copy": "checked" if panel.show_config_copy else "",
+        "qr": "checked" if panel.show_config_qr else "",
+    }
     return f"""<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>مدیریت پنل اشتراک</title><link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet"><style>
 *{{box-sizing:border-box;letter-spacing:0}}body{{margin:0;background:#f4f7fb;color:#172033;font-family:Vazirmatn,Tahoma,sans-serif}}main{{max-width:1100px;margin:auto;padding:24px 16px 50px}}header{{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}}h1{{font-size:25px;margin:0}}h2{{font-size:18px;margin:0 0 16px}}.card{{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:20px;margin-bottom:16px;box-shadow:0 8px 24px rgba(15,23,42,.05)}}.grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}}label{{display:grid;gap:6px;color:#64748b;font-size:13px}}input,textarea{{border:1px solid #cbd5e1;border-radius:8px;padding:11px;font:inherit;color:#172033}}textarea{{min-height:88px;resize:vertical}}button{{border:0;border-radius:8px;background:{panel.primary_color};color:white;padding:11px 16px;font:inherit;font-weight:700;cursor:pointer}}.danger{{background:#dc2626;padding:7px 10px}}.wide{{grid-column:1/-1}}.notice,.error{{padding:11px;border-radius:8px;margin-bottom:16px;overflow-wrap:anywhere}}.notice{{background:#dcfce7;color:#166534}}.error{{background:#fee2e2;color:#991b1b}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:10px;border-bottom:1px solid #e2e8f0;text-align:right;vertical-align:middle}}td.ltr{{direction:ltr;text-align:left;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}a{{color:{panel.primary_color};font-weight:700}}.actions{{display:flex;justify-content:flex-end;margin-top:14px}}.toggle{{display:flex;align-items:center;gap:8px}}@media(max-width:700px){{.grid{{grid-template-columns:1fr}}.wide{{grid-column:auto}}.table-wrap{{overflow:auto}}}}</style></head><body><main><header><div><h1>مدیریت Phantom Subscription</h1><span>ساخته‌شده بر پایه ظاهر marzban-template</span></div><a href="{settings.public_base_url}/health">وضعیت سرویس</a></header>{flash}
 <section class="card"><h2>تبدیل دستی لینک ساب</h2><form method="post" action="/admin/subscriptions"><div class="grid"><label class="wide">لینک اصلی سابسکریپشن<input name="upstream_url" type="url" required placeholder="https://example.com/token/..."></label><label>توکن دلخواه، اختیاری<input name="token" placeholder="اگر خالی باشد خودکار ساخته می‌شود"></label><label>نام سرویس<input name="service_name"></label><label>حجم گیگ<input name="volume_gb" type="number" min="0" value="0"></label><label>دسته‌بندی<input name="category_key" value="manual"></label></div><div class="actions"><button>ساخت لینک اختصاصی</button></div></form></section>
-<section class="card"><h2>تنظیمات قالب</h2><form method="post" action="/admin/settings"><div class="grid"><label>نام برند<input name="brand_name" value="{html.escape(panel.brand_name)}"></label><label>آیدی کانال<input name="channel_handle" value="{html.escape(panel.channel_handle)}"></label><label>رنگ اصلی<input name="primary_color" type="color" value="{panel.primary_color}"></label><label>رنگ وضعیت<input name="accent_color" type="color" value="{panel.accent_color}"></label><label>رنگ پس‌زمینه<input name="background_color" type="color" value="{panel.background_color}"></label><label>متن دکمه کپی<input name="copy_button_text" value="{html.escape(panel.copy_button_text)}"></label><label class="wide">متن بالای صفحه<textarea name="hero_text">{html.escape(panel.hero_text)}</textarea></label><label class="wide">متن پشتیبانی<textarea name="support_text">{html.escape(panel.support_text)}</textarea></label><label>عنوان برنامه‌ها<input name="apps_title" value="{html.escape(panel.apps_title)}"></label><label class="toggle"><input name="show_config_preview" type="checkbox" {checked}> نمایش پیش‌نمایش کانفیگ‌ها</label></div><div class="actions"><button>ذخیره تنظیمات</button></div></form></section>
+<section class="card"><h2>تنظیمات کامل قالب</h2><form method="post" action="/admin/settings"><div class="grid">
+<label>نام برند<input name="brand_name" value="{html.escape(panel.brand_name)}"></label><label>آیدی کانال<input name="channel_handle" value="{html.escape(panel.channel_handle)}"></label>
+<label>رنگ اصلی<input name="primary_color" type="color" value="{panel.primary_color}"></label><label>رنگ وضعیت<input name="accent_color" type="color" value="{panel.accent_color}"></label>
+<label>رنگ پس‌زمینه<input name="background_color" type="color" value="{panel.background_color}"></label><label>رنگ کارت‌ها<input name="card_color" type="color" value="{panel.card_color}"></label>
+<label>رنگ متن اصلی<input name="text_color" type="color" value="{panel.text_color}"></label><label>رنگ متن فرعی<input name="muted_text_color" type="color" value="{panel.muted_text_color}"></label>
+<label>رنگ دکمه فرعی<input name="secondary_button_color" type="color" value="{panel.secondary_button_color}"></label><label>متن وضعیت<input name="active_status_text" value="{html.escape(panel.active_status_text)}"></label>
+<label class="wide">متن بالای صفحه<textarea name="hero_text">{html.escape(panel.hero_text)}</textarea></label><label class="wide">متن پشتیبانی<textarea name="support_text">{html.escape(panel.support_text)}</textarea></label>
+<label>عنوان مصرف‌شده<input name="used_label" value="{html.escape(panel.used_label)}"></label><label>عنوان باقی‌مانده<input name="remaining_label" value="{html.escape(panel.remaining_label)}"></label>
+<label>عنوان انقضا<input name="expiry_label" value="{html.escape(panel.expiry_label)}"></label><label>عنوان تعداد کانفیگ<input name="config_count_label" value="{html.escape(panel.config_count_label)}"></label>
+<label>عنوان لینک اشتراک<input name="subscription_title" value="{html.escape(panel.subscription_title)}"></label><label>متن دکمه کپی لینک<input name="copy_button_text" value="{html.escape(panel.copy_button_text)}"></label>
+<label>متن دکمه QR لینک<input name="qr_button_text" value="{html.escape(panel.qr_button_text)}"></label><label>عنوان اتصال سریع<input name="apps_title" value="{html.escape(panel.apps_title)}"></label>
+<label>متن V2RayNG<input name="v2rayng_button_text" value="{html.escape(panel.v2rayng_button_text)}"></label><label>متن Hiddify<input name="hiddify_button_text" value="{html.escape(panel.hiddify_button_text)}"></label>
+<label>متن Streisand<input name="streisand_button_text" value="{html.escape(panel.streisand_button_text)}"></label><label>متن HAPP<input name="happ_button_text" value="{html.escape(panel.happ_button_text)}"></label>
+<label>متن دکمه کانال<input name="channel_button_text" value="{html.escape(panel.channel_button_text)}"></label><label>عنوان فهرست کانفیگ‌ها<input name="configs_title" value="{html.escape(panel.configs_title)}"></label>
+<label>متن کپی هر کانفیگ<input name="config_copy_button_text" value="{html.escape(panel.config_copy_button_text)}"></label><label>متن QR هر کانفیگ<input name="config_qr_button_text" value="{html.escape(panel.config_qr_button_text)}"></label>
+<label class="wide">متن نبود کانفیگ<input name="empty_configs_text" value="{html.escape(panel.empty_configs_text)}"></label>
+<label class="toggle"><input name="show_quick_connect" type="checkbox" {checked['quick']}> نمایش اتصال سریع</label>
+<label class="toggle"><input name="show_channel_button" type="checkbox" {checked['channel']}> نمایش دکمه کانال</label>
+<label class="toggle"><input name="show_config_preview" type="checkbox" {checked['preview']}> نمایش کانفیگ‌ها</label>
+<label class="toggle"><input name="show_config_copy" type="checkbox" {checked['copy']}> نمایش کپی هر کانفیگ</label>
+<label class="toggle"><input name="show_config_qr" type="checkbox" {checked['qr']}> نمایش QR هر کانفیگ</label>
+</div><div class="actions"><button>ذخیره تنظیمات</button></div></form></section>
 <section class="card"><h2>لینک‌های ثبت‌شده</h2><div class="table-wrap"><table><thead><tr><th>نام</th><th>حجم</th><th>لینک اختصاصی</th><th>لینک اصلی</th><th></th></tr></thead><tbody>{rows}</tbody></table></div></section></main></body></html>"""
