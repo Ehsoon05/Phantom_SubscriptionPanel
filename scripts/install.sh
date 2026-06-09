@@ -61,6 +61,12 @@ if command -v nginx >/dev/null 2>&1; then
   ln -sf /etc/nginx/sites-available/phantom-subscription-panel.conf /etc/nginx/sites-enabled/phantom-subscription-panel.conf
   nginx -t
   systemctl reload nginx
+
+  if command -v certbot >/dev/null 2>&1 && [ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+    certbot --nginx -d "$DOMAIN" --non-interactive --redirect --reinstall
+    nginx -t
+    systemctl reload nginx
+  fi
 fi
 
 systemctl status phantom-subscription-panel.service --no-pager
