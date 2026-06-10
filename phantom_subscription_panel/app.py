@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import html
 import json
 import re
 import secrets
+import time
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
 import httpx
@@ -33,6 +36,7 @@ FORWARDED_HEADERS = (
     "etag",
     "last-modified",
 )
+_cache_refresh_tasks: set[str] = set()
 
 
 class ConfigSyncPayload(BaseModel):
@@ -48,6 +52,7 @@ class ConfigSyncPayload(BaseModel):
 async def startup() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    settings.subscription_cache_dir.mkdir(parents=True, exist_ok=True)
 
 
 @app.get("/")
@@ -315,6 +320,16 @@ async def _config_for_token(token: str) -> Config | None:
 
 
 async def _fetch_upstream(url: str) -> dict:
+    cached = _read_upstream_cache(url)
+    if cached:
+        if time.time() - cached["cached_at"] >= settings.subscription_cache_ttl_seconds:
+            _schedule_cache_refresh(url)
+        return cached
+
+    return await _fetch_and_cache_upstream(url)
+
+
+async def _fetch_and_cache_upstream(url: str) -> dict:
     headers = {
         "User-Agent": "v2rayNG/1.10 PhantomSubscriptionPanel/2.0",
         "Accept": "text/plain, application/octet-stream, */*",
@@ -326,14 +341,14 @@ async def _fetch_upstream(url: str) -> dict:
         timeout=settings.request_timeout_seconds,
         verify=settings.upstream_verify_tls,
     ) as client:
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 response = await client.get(url, headers=headers)
                 response.raise_for_status()
                 break
             except httpx.HTTPError as exc:
                 last_error = exc
-                if attempt < 2:
+                if attempt < 1:
                     await asyncio.sleep(0.4 * (attempt + 1))
         else:
             raise HTTPException(
@@ -344,7 +359,7 @@ async def _fetch_upstream(url: str) -> dict:
     body = response.content
     if _looks_like_html(body):
         raise HTTPException(status_code=502, detail="Upstream returned an HTML page instead of subscription data")
-    return {
+    upstream = {
         "body": body,
         "content_type": response.headers.get("content-type", "text/plain; charset=utf-8"),
         "forward_headers": {name: response.headers[name] for name in FORWARDED_HEADERS if name in response.headers},
@@ -352,6 +367,65 @@ async def _fetch_upstream(url: str) -> dict:
         "usage": _parse_subscription_userinfo(response.headers.get("subscription-userinfo", "")),
         "title": _upstream_title(response.headers),
     }
+    _write_upstream_cache(url, upstream)
+    return upstream
+
+
+def _cache_path(url: str) -> Path:
+    key = hashlib.sha256(url.encode("utf-8")).hexdigest()
+    return settings.subscription_cache_dir / f"{key}.json"
+
+
+def _read_upstream_cache(url: str) -> dict | None:
+    try:
+        payload = json.loads(_cache_path(url).read_text(encoding="utf-8"))
+        body = base64.b64decode(payload["body"])
+        return {
+            "body": body,
+            "content_type": payload["content_type"],
+            "forward_headers": payload["forward_headers"],
+            "lines": _subscription_lines(body),
+            "usage": payload["usage"],
+            "title": payload["title"],
+            "cached_at": float(payload["cached_at"]),
+        }
+    except (OSError, KeyError, TypeError, ValueError, binascii.Error, json.JSONDecodeError):
+        return None
+
+
+def _write_upstream_cache(url: str, upstream: dict) -> None:
+    path = _cache_path(url)
+    temporary_path = path.with_suffix(".tmp")
+    payload = {
+        "body": base64.b64encode(upstream["body"]).decode("ascii"),
+        "content_type": upstream["content_type"],
+        "forward_headers": upstream["forward_headers"],
+        "usage": upstream["usage"],
+        "title": upstream["title"],
+        "cached_at": time.time(),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temporary_path.replace(path)
+    except OSError:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _schedule_cache_refresh(url: str) -> None:
+    if url in _cache_refresh_tasks:
+        return
+    _cache_refresh_tasks.add(url)
+
+    async def refresh() -> None:
+        try:
+            await _fetch_and_cache_upstream(url)
+        except HTTPException:
+            pass
+        finally:
+            _cache_refresh_tasks.discard(url)
+
+    asyncio.create_task(refresh())
 
 
 def _wants_html(request: Request) -> bool:
@@ -507,12 +581,14 @@ def _render_subscription_page(config: Config, upstream: dict) -> str:
     purchased_volume = f"{config.volume_gb}GB" if config.volume_gb else "نامشخص"
     quick_connect = ""
     if panel.show_quick_connect:
+        encoded_url = quote(public_url, safe="")
+        encoded_title = quote(upstream["title"], safe="")
         quick_connect = (
             f"<div class='section-title spaced'>{html.escape(panel.apps_title)}</div>"
             f"<p class='apps-help'>{html.escape(panel.apps_help_text)}</p><div class='btn-grid'>"
-            f"<a class='link-btn' style='background:{panel.v2rayng_button_color}' href='v2rayng://install-config?url={quote(public_url, safe='')}'>{html.escape(panel.v2rayng_button_text)}</a>"
-            f"<a class='link-btn' style='background:{panel.hiddify_button_color}' href='hiddify://import/{quote(public_url, safe='')}'>{html.escape(panel.hiddify_button_text)}</a>"
-            f"<a class='link-btn' style='background:{panel.streisand_button_color}' href='streisand://import/{quote(public_url, safe='')}'>{html.escape(panel.streisand_button_text)}</a>"
+            f"<a class='link-btn' style='background:{panel.v2rayng_button_color}' href='v2rayng://install-sub?url={encoded_url}#{encoded_title}'>{html.escape(panel.v2rayng_button_text)}</a>"
+            f"<a class='link-btn' style='background:{panel.hiddify_button_color}' href='hiddify://import/?url={encoded_url}&name={encoded_title}'>{html.escape(panel.hiddify_button_text)}</a>"
+            f"<a class='link-btn' style='background:{panel.streisand_button_color}' href='streisand://import/{public_url}#{encoded_title}'>{html.escape(panel.streisand_button_text)}</a>"
             f"<a class='link-btn' style='background:{panel.happ_button_color}' href='/connect/happ/{quote(config.public_sub_token, safe='')}'>{html.escape(panel.happ_button_text)}</a></div>"
         )
     channel_button = (

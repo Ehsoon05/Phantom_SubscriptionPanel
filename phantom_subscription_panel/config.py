@@ -24,6 +24,13 @@ class Settings:
     admin_username = os.getenv("PANEL_ADMIN_USERNAME", "admin").strip()
     admin_password = os.getenv("PANEL_ADMIN_PASSWORD", "").strip()
     settings_file = Path(os.getenv("PANEL_SETTINGS_FILE", "panel-settings.json")).expanduser()
+    subscription_cache_dir = Path(
+        os.getenv(
+            "SUBSCRIPTION_CACHE_DIR",
+            str(settings_file.parent / "subscription-cache"),
+        )
+    ).expanduser()
+    subscription_cache_ttl_seconds = int(os.getenv("SUBSCRIPTION_CACHE_TTL_SECONDS", "60"))
 
 
 settings = Settings()

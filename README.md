@@ -25,6 +25,8 @@ PANEL_ADMIN_PASSWORD=change-this-password
 PANEL_SETTINGS_FILE=/opt/phantom-subscription-panel/panel-settings.json
 UPSTREAM_VERIFY_TLS=false
 REQUEST_TIMEOUT_SECONDS=20
+SUBSCRIPTION_CACHE_DIR=/opt/phantom-subscription-panel/subscription-cache
+SUBSCRIPTION_CACHE_TTL_SECONDS=60
 ```
 
 ## Run
