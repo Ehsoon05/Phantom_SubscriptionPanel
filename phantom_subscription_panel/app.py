@@ -549,6 +549,11 @@ def _format_bytes(value: int | None) -> str:
     return f"{size:.1f} {units[index]}"
 
 
+def _format_compact_gb(value: int) -> str:
+    size_gb = max(value, 0) / 1024**3
+    return f"{size_gb:g}GB"
+
+
 def _render_subscription_page(config: Config, upstream: dict) -> str:
     panel = load_panel_settings()
     usage = upstream["usage"]
@@ -584,7 +589,10 @@ def _render_subscription_page(config: Config, upstream: dict) -> str:
     )
     channel_url = f"https://t.me/{panel.channel_handle.lstrip('@')}"
     title = html.escape(upstream["title"])
-    purchased_volume = f"{config.volume_gb}GB" if config.volume_gb else "نامشخص"
+    upstream_total = usage.get("total", 0)
+    purchased_volume = _format_compact_gb(upstream_total) if upstream_total else (
+        f"{config.volume_gb}GB" if config.volume_gb else "نامشخص"
+    )
     quick_connect = ""
     if panel.show_quick_connect:
         encoded_url = quote(public_url, safe="")
