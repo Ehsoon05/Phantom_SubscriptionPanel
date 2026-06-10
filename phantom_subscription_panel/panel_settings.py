@@ -20,6 +20,7 @@ class PanelSettings:
     hero_text: str = "اشتراک شما آماده است. این لینک را داخل اپلیکیشن کلاینت خود وارد کنید."
     support_text: str = "برای آموزش‌ها و اطلاعیه‌ها عضو کانال شوید."
     active_status_text: str = "فعال"
+    purchased_volume_label: str = "حجم خریداری‌شده"
     used_label: str = "حجم مصرف‌شده"
     remaining_label: str = "حجم باقی‌مانده"
     expiry_label: str = "تاریخ انقضا"
