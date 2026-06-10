@@ -297,7 +297,7 @@ async def connect_happ(token: str) -> RedirectResponse:
         raise HTTPException(status_code=502, detail="HAPP quick connect is unavailable") from exc
     if not isinstance(encrypted_link, str) or not encrypted_link.startswith("happ://"):
         raise HTTPException(status_code=502, detail="HAPP returned an invalid link")
-    return RedirectResponse(encrypted_link)
+    return RedirectResponse(encrypted_link, status_code=302)
 
 
 def _require_sync_token(authorization: str | None) -> None:
@@ -357,7 +357,18 @@ async def _fetch_upstream(url: str) -> dict:
 def _wants_html(request: Request) -> bool:
     accept = request.headers.get("accept", "").lower()
     user_agent = request.headers.get("user-agent", "").lower()
-    vpn_clients = ("v2ray", "clash", "sing-box", "hiddify", "streisand", "shadowrocket", "nekobox", "v2box", "foxray")
+    vpn_clients = (
+        "v2ray",
+        "clash",
+        "sing-box",
+        "hiddify",
+        "streisand",
+        "shadowrocket",
+        "nekobox",
+        "v2box",
+        "foxray",
+        "happ",
+    )
     return "text/html" in accept and not any(client in user_agent for client in vpn_clients)
 
 
