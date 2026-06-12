@@ -43,6 +43,9 @@ FORWARDED_HEADERS = (
     "last-modified",
 )
 _cache_refresh_tasks: set[str] = set()
+_memory_cache: dict[str, dict] = {}
+_fetch_locks: dict[str, asyncio.Lock] = {}
+_upstream_client: httpx.AsyncClient | None = None
 
 
 class ConfigSyncPayload(BaseModel):
@@ -56,9 +59,24 @@ class ConfigSyncPayload(BaseModel):
 
 @app.on_event("startup")
 async def startup() -> None:
+    global _upstream_client
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     settings.subscription_cache_dir.mkdir(parents=True, exist_ok=True)
+    _upstream_client = httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=settings.request_timeout_seconds,
+        verify=settings.upstream_verify_tls,
+        limits=httpx.Limits(max_connections=50, max_keepalive_connections=20, keepalive_expiry=30),
+    )
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    global _upstream_client
+    if _upstream_client is not None:
+        await _upstream_client.aclose()
+        _upstream_client = None
 
 
 @app.get("/")
@@ -266,6 +284,7 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
         config.is_sold = payload.is_sold
         config.service_name = payload.service_name
         await session.commit()
+    _schedule_cache_refresh(payload.upstream_url)
     return "ok"
 
 
@@ -332,7 +351,12 @@ async def _fetch_upstream(url: str) -> dict:
             _schedule_cache_refresh(url)
         return cached
 
-    return await _fetch_and_cache_upstream(url)
+    lock = _fetch_locks.setdefault(url, asyncio.Lock())
+    async with lock:
+        cached = _read_upstream_cache(url)
+        if cached:
+            return cached
+        return await _fetch_and_cache_upstream(url)
 
 
 async def _fetch_and_cache_upstream(url: str) -> dict:
@@ -342,11 +366,15 @@ async def _fetch_and_cache_upstream(url: str) -> dict:
         "Cache-Control": "no-cache",
     }
     last_error: httpx.HTTPError | None = None
-    async with httpx.AsyncClient(
-        follow_redirects=True,
-        timeout=settings.request_timeout_seconds,
-        verify=settings.upstream_verify_tls,
-    ) as client:
+    client = _upstream_client
+    owns_client = client is None
+    if client is None:
+        client = httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=settings.request_timeout_seconds,
+            verify=settings.upstream_verify_tls,
+        )
+    try:
         for attempt in range(2):
             try:
                 response = await client.get(url, headers=headers)
@@ -355,12 +383,15 @@ async def _fetch_and_cache_upstream(url: str) -> dict:
             except httpx.HTTPError as exc:
                 last_error = exc
                 if attempt < 1:
-                    await asyncio.sleep(0.4 * (attempt + 1))
+                    await asyncio.sleep(0.25 * (attempt + 1))
         else:
             raise HTTPException(
                 status_code=502,
                 detail=f"Upstream subscription is unavailable: {last_error}",
             ) from last_error
+    finally:
+        if owns_client:
+            await client.aclose()
 
     body = response.content
     if _looks_like_html(body):
@@ -383,10 +414,13 @@ def _cache_path(url: str) -> Path:
 
 
 def _read_upstream_cache(url: str) -> dict | None:
+    memory = _memory_cache.get(url)
+    if memory is not None:
+        return memory
     try:
         payload = json.loads(_cache_path(url).read_text(encoding="utf-8"))
         body = base64.b64decode(payload["body"])
-        return {
+        cached = {
             "body": body,
             "content_type": payload["content_type"],
             "forward_headers": payload["forward_headers"],
@@ -395,6 +429,8 @@ def _read_upstream_cache(url: str) -> dict | None:
             "title": payload["title"],
             "cached_at": float(payload["cached_at"]),
         }
+        _memory_cache[url] = cached
+        return cached
     except (OSError, KeyError, TypeError, ValueError, binascii.Error, json.JSONDecodeError):
         return None
 
@@ -402,13 +438,21 @@ def _read_upstream_cache(url: str) -> dict | None:
 def _write_upstream_cache(url: str, upstream: dict) -> None:
     path = _cache_path(url)
     temporary_path = path.with_suffix(".tmp")
+    cached_at = time.time()
     payload = {
         "body": base64.b64encode(upstream["body"]).decode("ascii"),
         "content_type": upstream["content_type"],
         "forward_headers": upstream["forward_headers"],
         "usage": upstream["usage"],
         "title": upstream["title"],
-        "cached_at": time.time(),
+        "cached_at": cached_at,
+    }
+    _memory_cache[url] = {
+        **upstream,
+        "lines": list(upstream["lines"]),
+        "usage": dict(upstream["usage"]),
+        "forward_headers": dict(upstream["forward_headers"]),
+        "cached_at": cached_at,
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -612,10 +656,12 @@ def _render_subscription_page(config: Config, upstream: dict) -> str:
     return f"""<!doctype html>
 <html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
-<link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet"></noscript>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
-*{{box-sizing:border-box;letter-spacing:0}}:root{{--primary:{panel.primary_color};--accent:{panel.accent_color};--bg:{panel.background_color};--card:{panel.card_color};--text:{panel.text_color};--muted:{panel.muted_text_color};--secondary:{panel.secondary_button_color};--border:color-mix(in srgb,var(--text) 18%,transparent)}}body{{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:Vazirmatn,Tahoma,sans-serif}}.background{{position:fixed;inset:0;z-index:-1;background:linear-gradient(145deg,var(--bg),color-mix(in srgb,var(--primary) 16%,var(--bg)))}}.container{{max-width:800px;margin:auto;padding:28px 16px 48px}}.brand-header{{display:flex;justify-content:center;align-items:center;width:100%;margin:0 auto 24px}}.brand-header img{{display:block;width:min(100%,680px);height:auto;aspect-ratio:1080/267;object-fit:contain}}.glass-card{{background:color-mix(in srgb,var(--card) 92%,transparent);border:1px solid var(--border);backdrop-filter:blur(14px);border-radius:8px;padding:20px;margin-bottom:18px;box-shadow:0 20px 50px rgba(0,0,0,.2)}}.header{{display:flex;justify-content:space-between;gap:16px;align-items:center}}.header-copy{{min-width:0}}.header-labels{{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}}h1{{font-size:24px;margin:0 0 6px;overflow-wrap:anywhere}}p{{color:var(--muted);line-height:1.9;margin:0}}.status,.volume-badge{{padding:8px 12px;border-radius:8px;white-space:nowrap;flex:0 0 auto}}.status{{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 40%,transparent)}}.volume-badge{{background:color-mix(in srgb,var(--primary) 18%,transparent);color:color-mix(in srgb,var(--primary) 65%,white);border:1px solid color-mix(in srgb,var(--primary) 48%,transparent)}}.stats-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:18px}}.stat-card{{background:color-mix(in srgb,var(--text) 6%,transparent);border:1px solid var(--border);border-radius:8px;padding:16px}}.stat-label{{color:var(--muted);font-size:13px}}.stat-value{{font-size:19px;font-weight:800;margin-top:6px}}.progress{{height:8px;background:color-mix(in srgb,var(--text) 10%,transparent);border-radius:4px;overflow:hidden;margin-top:12px}}.progress i{{display:block;height:100%;width:{percent}%;background:var(--primary)}}.subscription-container{{display:flex;gap:10px;align-items:stretch}}.subscription-url{{direction:ltr;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;padding:13px;background:color-mix(in srgb,var(--text) 6%,transparent);border:1px solid var(--border);border-radius:8px;color:var(--muted)}}button,.link-btn{{border:0;border-radius:8px;padding:12px 15px;background:var(--primary);color:#fff;font:inherit;font-weight:700;cursor:pointer;text-decoration:none;text-align:center}}.btn-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}}.secondary{{background:var(--secondary);border:1px solid var(--border)}}.channel-btn{{display:block;margin-top:10px}}.section-title{{font-weight:800;margin-bottom:12px}}.spaced{{margin-top:20px;margin-bottom:4px}}.apps-help{{font-size:13px;margin-bottom:12px}}.proxy-list{{display:grid;gap:8px}}.proxy-item{{direction:ltr;text-align:left;background:color-mix(in srgb,var(--text) 5%,transparent);padding:10px;border-radius:8px;display:flex;gap:10px;align-items:center;overflow:hidden}}.proxy-copy{{min-width:0;flex:1}}.proxy-item strong{{direction:rtl;text-align:right;display:block;margin-bottom:4px}}.proxy-item span{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-family:monospace}}.proxy-actions{{display:flex;gap:6px}}.mini-btn{{padding:7px 10px;font-size:12px;white-space:nowrap}}.empty,.foot{{color:var(--muted);text-align:center}}#toast{{position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);background:var(--text);color:var(--bg);padding:10px 16px;border-radius:8px;font-weight:700;opacity:0;visibility:hidden;transition:.2s;z-index:10;box-shadow:0 10px 30px rgba(0,0,0,.3);white-space:nowrap}}#toast.show{{opacity:1;visibility:visible;transform:translate(-50%,0)}}#qr-modal{{display:none;position:fixed;inset:0;background:rgba(2,6,23,.9);align-items:center;justify-content:center;z-index:5}}#qr-modal.open{{display:flex}}#qrcode{{background:#fff;padding:16px;border-radius:8px}}@media(max-width:600px){{.container{{padding-top:20px}}.brand-header{{margin-bottom:18px}}.header{{flex-direction:column;align-items:flex-start;gap:10px}}.header-copy{{width:100%}}.header-labels{{justify-content:flex-start}}.status,.volume-badge{{padding:6px 10px}}.subscription-container{{flex-direction:column;align-items:stretch}}.stats-grid,.btn-grid{{grid-template-columns:1fr}}.proxy-item{{align-items:stretch;flex-direction:column}}.proxy-actions{{direction:rtl}}}}
+*{{box-sizing:border-box;letter-spacing:0}}:root{{--primary:{panel.primary_color};--accent:{panel.accent_color};--bg:{panel.background_color};--card:{panel.card_color};--text:{panel.text_color};--muted:{panel.muted_text_color};--secondary:{panel.secondary_button_color};--border:color-mix(in srgb,var(--text) 18%,transparent)}}body{{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:Vazirmatn,Tahoma,sans-serif}}.background{{position:fixed;inset:0;z-index:-1;background:linear-gradient(145deg,var(--bg),color-mix(in srgb,var(--primary) 16%,var(--bg)))}}.container{{max-width:800px;margin:auto;padding:28px 16px 48px}}.brand-header{{display:flex;justify-content:center;align-items:center;width:100%;margin:0 auto 24px}}.brand-header img{{display:block;width:min(100%,680px);height:auto;aspect-ratio:1080/267;object-fit:contain}}.glass-card{{background:color-mix(in srgb,var(--card) 92%,transparent);border:1px solid var(--border);backdrop-filter:blur(14px);border-radius:8px;padding:20px;margin-bottom:18px;box-shadow:0 20px 50px rgba(0,0,0,.2);content-visibility:auto;contain-intrinsic-size:260px}}.header{{display:flex;justify-content:space-between;gap:16px;align-items:center}}.header-copy{{min-width:0}}.header-labels{{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}}h1{{font-size:24px;margin:0 0 6px;overflow-wrap:anywhere}}p{{color:var(--muted);line-height:1.9;margin:0}}.status,.volume-badge{{padding:8px 12px;border-radius:8px;white-space:nowrap;flex:0 0 auto}}.status{{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 40%,transparent)}}.volume-badge{{background:color-mix(in srgb,var(--primary) 18%,transparent);color:color-mix(in srgb,var(--primary) 65%,white);border:1px solid color-mix(in srgb,var(--primary) 48%,transparent)}}.stats-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:18px}}.stat-card{{background:color-mix(in srgb,var(--text) 6%,transparent);border:1px solid var(--border);border-radius:8px;padding:16px}}.stat-label{{color:var(--muted);font-size:13px}}.stat-value{{font-size:19px;font-weight:800;margin-top:6px}}.progress{{height:8px;background:color-mix(in srgb,var(--text) 10%,transparent);border-radius:4px;overflow:hidden;margin-top:12px}}.progress i{{display:block;height:100%;width:{percent}%;background:var(--primary)}}.subscription-container{{display:flex;gap:10px;align-items:stretch}}.subscription-url{{direction:ltr;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;padding:13px;background:color-mix(in srgb,var(--text) 6%,transparent);border:1px solid var(--border);border-radius:8px;color:var(--muted)}}button,.link-btn{{border:0;border-radius:8px;padding:12px 15px;background:var(--primary);color:#fff;font:inherit;font-weight:700;cursor:pointer;text-decoration:none;text-align:center}}.btn-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}}.secondary{{background:var(--secondary);border:1px solid var(--border)}}.channel-btn{{display:block;margin-top:10px}}.section-title{{font-weight:800;margin-bottom:12px}}.spaced{{margin-top:20px;margin-bottom:4px}}.apps-help{{font-size:13px;margin-bottom:12px}}.proxy-list{{display:grid;gap:8px}}.proxy-item{{direction:ltr;text-align:left;background:color-mix(in srgb,var(--text) 5%,transparent);padding:10px;border-radius:8px;display:flex;gap:10px;align-items:center;overflow:hidden}}.proxy-copy{{min-width:0;flex:1}}.proxy-item strong{{direction:rtl;text-align:right;display:block;margin-bottom:4px}}.proxy-item span{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-family:monospace}}.proxy-actions{{display:flex;gap:6px}}.mini-btn{{padding:7px 10px;font-size:12px;white-space:nowrap}}.empty,.foot{{color:var(--muted);text-align:center}}#toast{{position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);background:var(--text);color:var(--bg);padding:10px 16px;border-radius:8px;font-weight:700;opacity:0;visibility:hidden;transition:.2s;z-index:10;box-shadow:0 10px 30px rgba(0,0,0,.3);white-space:nowrap}}#toast.show{{opacity:1;visibility:visible;transform:translate(-50%,0)}}#qr-modal{{display:none;position:fixed;inset:0;background:rgba(2,6,23,.9);align-items:center;justify-content:center;z-index:5}}#qr-modal.open{{display:flex}}#qrcode{{background:#fff;padding:16px;border-radius:8px}}@media(max-width:600px){{.container{{padding-top:20px}}.brand-header{{margin-bottom:18px}}.header{{flex-direction:column;align-items:flex-start;gap:10px}}.header-copy{{width:100%}}.header-labels{{justify-content:flex-start}}.status,.volume-badge{{padding:6px 10px}}.subscription-container{{flex-direction:column;align-items:stretch}}.stats-grid,.btn-grid{{grid-template-columns:1fr}}.proxy-item{{align-items:stretch;flex-direction:column}}.proxy-actions{{direction:rtl}}}}
 </style></head><body><div class="background"></div><main class="container"><div class="brand-header"><img src="/static/header.png" alt="Phantom Hubs"></div>
 <section class="glass-card"><div class="header"><div class="header-copy"><h1>{title}</h1><p>{html.escape(panel.hero_text)}</p></div><div class="header-labels"><div class="status">{html.escape(panel.active_status_text)}</div><div class="volume-badge">{purchased_volume}</div></div></div>
 <div class="stats-grid"><div class="stat-card"><div class="stat-label">{html.escape(panel.used_label)}</div><div class="stat-value">{_format_bytes(used)}</div><div class="progress"><i></i></div></div><div class="stat-card"><div class="stat-label">{html.escape(panel.remaining_label)}</div><div class="stat-value">{_format_bytes(remaining)}</div></div><div class="stat-card"><div class="stat-label">{html.escape(panel.expiry_label)}</div><div class="stat-value">{expire_text}</div></div><div class="stat-card"><div class="stat-label">{html.escape(panel.config_count_label)}</div><div class="stat-value">{len(upstream['lines'])}</div></div></div></section>
