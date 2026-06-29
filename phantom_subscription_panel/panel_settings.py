@@ -9,6 +9,7 @@ from .config import settings
 @dataclass
 class PanelSettings:
     brand_name: str = "Phantom Hubs"
+    subscription_profile_title: str = ""
     primary_color: str = "#426df8"
     accent_color: str = "#22c55e"
     background_color: str = "#0f172a"

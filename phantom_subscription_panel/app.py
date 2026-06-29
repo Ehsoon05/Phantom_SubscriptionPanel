@@ -57,6 +57,10 @@ class ConfigSyncPayload(BaseModel):
     service_name: str | None = None
 
 
+class PanelSettingsSyncPayload(BaseModel):
+    subscription_profile_title: str = ""
+
+
 @app.on_event("startup")
 async def startup() -> None:
     global _upstream_client
@@ -106,6 +110,7 @@ async def subscription(token: str, request: Request) -> Response:
 
     response_headers = {"Cache-Control": "no-store, no-cache, must-revalidate", "X-Content-Type-Options": "nosniff"}
     response_headers.update(upstream["forward_headers"])
+    response_headers.update(_subscription_title_headers(_display_title_for_subscription(config, upstream)))
     return Response(
         content=upstream["body"],
         media_type=upstream["content_type"] or "text/plain; charset=utf-8",
@@ -131,6 +136,7 @@ async def admin_form(_: str = Depends(_require_admin)) -> str:
 @app.post("/admin/settings", response_class=HTMLResponse)
 async def admin_save_settings(
     brand_name: str = Form(...),
+    subscription_profile_title: str = Form(default=""),
     primary_color: str = Form(...),
     accent_color: str = Form(...),
     background_color: str = Form(...),
@@ -180,6 +186,7 @@ async def admin_save_settings(
 ) -> str:
     panel = PanelSettings(
         brand_name=brand_name.strip() or "Phantom Hubs",
+        subscription_profile_title=subscription_profile_title.strip(),
         primary_color=_normalize_color(primary_color, "#426df8"),
         accent_color=_normalize_color(accent_color, "#22c55e"),
         background_color=_normalize_color(background_color, "#0f172a"),
@@ -285,6 +292,15 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
         config.service_name = payload.service_name
         await session.commit()
     _schedule_cache_refresh(payload.upstream_url)
+    return "ok"
+
+
+@app.post("/internal/settings", response_class=PlainTextResponse)
+async def sync_panel_settings(payload: PanelSettingsSyncPayload, authorization: str | None = Header(default=None)) -> str:
+    _require_sync_token(authorization)
+    panel = load_panel_settings()
+    panel.subscription_profile_title = payload.subscription_profile_title.strip()
+    save_panel_settings(panel)
     return "ok"
 
 
@@ -576,6 +592,20 @@ def _upstream_title(headers: httpx.Headers) -> str:
     return disposition_title or profile_title or "Subscription"
 
 
+def _display_title_for_subscription(config: Config, upstream: dict) -> str:
+    panel = load_panel_settings()
+    return (panel.subscription_profile_title or config.service_name or upstream["title"] or "Subscription").strip()
+
+
+def _subscription_title_headers(title: str) -> dict[str, str]:
+    safe_title = title.strip() or "Subscription"
+    quoted_title = quote(safe_title, safe="")
+    return {
+        "profile-title": quoted_title,
+        "content-disposition": f"inline; filename*=UTF-8''{quoted_title}.txt",
+    }
+
+
 def _config_name(line: str, index: int) -> str:
     fragment = unquote(urlparse(line).fragment).strip()
     return fragment or f"کانفیگ {index}"
@@ -632,7 +662,8 @@ def _render_subscription_page(config: Config, upstream: dict) -> str:
         else ""
     )
     channel_url = f"https://t.me/{panel.channel_handle.lstrip('@')}"
-    title = html.escape(upstream["title"])
+    display_title = _display_title_for_subscription(config, upstream)
+    title = html.escape(display_title)
     upstream_total = usage.get("total", 0)
     purchased_volume = _format_compact_gb(upstream_total) if upstream_total else (
         f"{config.volume_gb}GB" if config.volume_gb else "نامشخص"
@@ -640,7 +671,7 @@ def _render_subscription_page(config: Config, upstream: dict) -> str:
     quick_connect = ""
     if panel.show_quick_connect:
         encoded_url = quote(public_url, safe="")
-        encoded_title = quote(upstream["title"], safe="")
+        encoded_title = quote(display_title, safe="")
         quick_connect = (
             f"<div class='section-title spaced'>{html.escape(panel.apps_title)}</div>"
             f"<p class='apps-help'>{html.escape(panel.apps_help_text)}</p><div class='btn-grid'>"
@@ -692,6 +723,7 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
 <section class="card"><h2>تبدیل دستی لینک ساب</h2><form method="post" action="/admin/subscriptions"><div class="grid"><label class="wide">لینک اصلی سابسکریپشن<input name="upstream_url" type="url" required placeholder="https://example.com/token/..."></label><label>توکن دلخواه، اختیاری<input name="token" placeholder="اگر خالی باشد خودکار ساخته می‌شود"></label><label>نام سرویس<input name="service_name"></label><label>حجم گیگ<input name="volume_gb" type="number" min="0" value="0"></label><label>دسته‌بندی<input name="category_key" value="manual"></label></div><div class="actions"><button>ساخت لینک اختصاصی</button></div></form></section>
 <section class="card"><h2>تنظیمات کامل قالب</h2><form method="post" action="/admin/settings"><div class="grid">
 <label>نام برند<input name="brand_name" value="{html.escape(panel.brand_name)}"></label><label>آیدی کانال<input name="channel_handle" value="{html.escape(panel.channel_handle)}"></label>
+<label class="wide">نام نمایشی سابسکریپشن داخل برنامه‌ها<input name="subscription_profile_title" value="{html.escape(panel.subscription_profile_title)}" placeholder="خالی باشد، نام لینک اصلی یا نام سرویس استفاده می‌شود"></label>
 <label>رنگ اصلی<input name="primary_color" type="color" value="{panel.primary_color}"></label><label>رنگ وضعیت<input name="accent_color" type="color" value="{panel.accent_color}"></label>
 <label>رنگ پس‌زمینه<input name="background_color" type="color" value="{panel.background_color}"></label><label>رنگ کارت‌ها<input name="card_color" type="color" value="{panel.card_color}"></label>
 <label>رنگ متن اصلی<input name="text_color" type="color" value="{panel.text_color}"></label><label>رنگ متن فرعی<input name="muted_text_color" type="color" value="{panel.muted_text_color}"></label>
