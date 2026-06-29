@@ -21,6 +21,7 @@ class Config(Base):
     public_sub_token = Column(String, nullable=False, unique=True)
     is_sold = Column(Boolean, default=False)
     service_name = Column(String, nullable=True)
+    profile_title = Column(String, nullable=True)
 
 
 engine = create_async_engine(settings.panel_db_url, echo=False)
