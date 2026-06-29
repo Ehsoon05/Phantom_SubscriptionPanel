@@ -117,7 +117,8 @@ async def subscription(token: str, request: Request) -> Response:
 
     upstream = await _fetch_upstream(config.sub_link)
     if _wants_html(request):
-        return HTMLResponse(_render_subscription_page(config, upstream))
+        web_title = await _fetch_upstream_web_title(config.sub_link)
+        return HTMLResponse(_render_subscription_page(config, upstream, web_title=web_title))
 
     await _enforce_device_limit(config, request)
 
@@ -279,7 +280,7 @@ async def admin_create_subscription(
         config.category_key = category_key.strip() or "manual"
         config.service_name = service_name.strip() or None
         config.profile_title = profile_title.strip() or None
-        config.device_limit = _positive_int(device_limit) or None
+        config.device_limit = _positive_int(device_limit)
         await session.commit()
     public_url = f"{settings.public_base_url}/token/{quote(token, safe='')}"
     return await _render_admin(load_panel_settings(), notice=f"لینک اختصاصی ساخته شد: {public_url}")
@@ -444,6 +445,51 @@ async def _fetch_and_cache_upstream(url: str) -> dict:
     }
     _write_upstream_cache(url, upstream)
     return upstream
+
+
+async def _fetch_upstream_web_title(url: str) -> str:
+    cache_key = f"web-title:{url}"
+    cached = _memory_cache.get(cache_key)
+    if cached and time.time() - cached.get("cached_at", 0) < settings.subscription_cache_ttl_seconds:
+        return str(cached.get("title") or "")
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 PhantomSubscriptionPanel/2.1",
+        "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+    }
+    client = _upstream_client
+    owns_client = client is None
+    if client is None:
+        client = httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=settings.request_timeout_seconds,
+            verify=settings.upstream_verify_tls,
+        )
+    try:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "").lower()
+        if "html" not in content_type:
+            return ""
+        match = re.search(r"<title[^>]*>(.*?)</title>", response.text, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            return ""
+        title = _clean_web_title(html.unescape(re.sub(r"\s+", " ", match.group(1))).strip())
+        _memory_cache[cache_key] = {"cached_at": time.time(), "title": title}
+        return title
+    except (httpx.HTTPError, UnicodeDecodeError):
+        return ""
+    finally:
+        if owns_client:
+            await client.aclose()
+
+
+def _clean_web_title(value: str) -> str:
+    title = value.strip()
+    for suffix in (" - Sub Info", " | Sub Info", " — Sub Info"):
+        if title.endswith(suffix):
+            return title[: -len(suffix)].strip()
+    return title
 
 
 def _cache_path(url: str) -> Path:
@@ -741,7 +787,7 @@ def _format_compact_gb(value: int) -> str:
     return f"{size_gb:g}GB"
 
 
-def _render_subscription_page(config: Config, upstream: dict) -> str:
+def _render_subscription_page(config: Config, upstream: dict, web_title: str = "") -> str:
     panel = load_panel_settings()
     usage = upstream["usage"]
     used = usage.get("upload", 0) + usage.get("download", 0)
@@ -776,7 +822,7 @@ def _render_subscription_page(config: Config, upstream: dict) -> str:
     )
     channel_url = f"https://t.me/{panel.channel_handle.lstrip('@')}"
     app_title = _app_title_for_subscription(config, upstream)
-    title = html.escape(_web_title_for_subscription(config, upstream))
+    title = html.escape(web_title or _web_title_for_subscription(config, upstream))
     upstream_total = usage.get("total", 0)
     purchased_volume = _format_compact_gb(upstream_total) if upstream_total else (
         f"{config.volume_gb}GB" if config.volume_gb else "نامشخص"
@@ -833,11 +879,11 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
     }
     return f"""<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>مدیریت پنل اشتراک</title><link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet"><style>
 *{{box-sizing:border-box;letter-spacing:0}}body{{margin:0;background:#f4f7fb;color:#172033;font-family:Vazirmatn,Tahoma,sans-serif}}main{{max-width:1100px;margin:auto;padding:24px 16px 50px}}header{{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}}h1{{font-size:25px;margin:0}}h2{{font-size:18px;margin:0 0 16px}}.card{{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:20px;margin-bottom:16px;box-shadow:0 8px 24px rgba(15,23,42,.05)}}.grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}}label{{display:grid;gap:6px;color:#64748b;font-size:13px}}input,textarea{{border:1px solid #cbd5e1;border-radius:8px;padding:11px;font:inherit;color:#172033}}textarea{{min-height:88px;resize:vertical}}button{{border:0;border-radius:8px;background:{panel.primary_color};color:white;padding:11px 16px;font:inherit;font-weight:700;cursor:pointer}}.danger{{background:#dc2626;padding:7px 10px}}.wide{{grid-column:1/-1}}.notice,.error{{padding:11px;border-radius:8px;margin-bottom:16px;overflow-wrap:anywhere}}.notice{{background:#dcfce7;color:#166534}}.error{{background:#fee2e2;color:#991b1b}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:10px;border-bottom:1px solid #e2e8f0;text-align:right;vertical-align:middle}}td.ltr{{direction:ltr;text-align:left;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}a{{color:{panel.primary_color};font-weight:700}}.actions{{display:flex;justify-content:flex-end;margin-top:14px}}.toggle{{display:flex;align-items:center;gap:8px}}@media(max-width:700px){{.grid{{grid-template-columns:1fr}}.wide{{grid-column:auto}}.table-wrap{{overflow:auto}}}}</style></head><body><main><header><div><h1>مدیریت Phantom Subscription</h1><span>ساخته‌شده بر پایه ظاهر marzban-template</span></div><a href="{settings.public_base_url}/health">وضعیت سرویس</a></header>{flash}
-<section class="card"><h2>تبدیل دستی لینک ساب</h2><form method="post" action="/admin/subscriptions"><div class="grid"><label class="wide">لینک اصلی سابسکریپشن<input name="upstream_url" type="url" required placeholder="https://example.com/token/..."></label><label>توکن دلخواه، اختیاری<input name="token" placeholder="اگر خالی باشد خودکار ساخته می‌شود"></label><label>نام سرویس<input name="service_name"></label><label>نام نمایشی اختصاصی داخل برنامه‌ها<input name="profile_title" placeholder="فقط برای همین لینک"></label><label>محدودیت دستگاه همین لینک<input name="device_limit" type="number" min="0" value="0" placeholder="0 یعنی پیش‌فرض عمومی"></label><label>حجم گیگ<input name="volume_gb" type="number" min="0" value="0"></label><label>دسته‌بندی<input name="category_key" value="manual"></label></div><div class="actions"><button>ساخت لینک اختصاصی</button></div></form></section>
+<section class="card"><h2>تبدیل دستی لینک ساب</h2><form method="post" action="/admin/subscriptions"><div class="grid"><label class="wide">لینک اصلی سابسکریپشن<input name="upstream_url" type="url" required placeholder="https://example.com/token/..."></label><label>توکن دلخواه، اختیاری<input name="token" placeholder="اگر خالی باشد خودکار ساخته می‌شود"></label><label>نام سرویس<input name="service_name"></label><label>نام نمایشی اختصاصی داخل برنامه‌ها<input name="profile_title" placeholder="فقط برای همین لینک"></label><label>محدودیت کاربر/دستگاه همین لینک<input name="device_limit" type="number" min="0" value="0" placeholder="0 یعنی نامحدود"></label><label>حجم گیگ<input name="volume_gb" type="number" min="0" value="0"></label><label>دسته‌بندی<input name="category_key" value="manual"></label></div><div class="actions"><button>ساخت لینک اختصاصی</button></div></form></section>
 <section class="card"><h2>تنظیمات کامل قالب</h2><form method="post" action="/admin/settings"><div class="grid">
 <label>نام برند<input name="brand_name" value="{html.escape(panel.brand_name)}"></label><label>آیدی کانال<input name="channel_handle" value="{html.escape(panel.channel_handle)}"></label>
 <label class="wide">نام نمایشی سابسکریپشن داخل برنامه‌ها<input name="subscription_profile_title" value="{html.escape(panel.subscription_profile_title)}" placeholder="خالی باشد، نام لینک اصلی یا نام سرویس استفاده می‌شود"></label>
-<label>محدودیت دستگاه پیش‌فرض لینک‌های ساب<input name="subscription_device_limit" type="number" min="0" value="{panel.subscription_device_limit}"><span>0 یعنی خاموش؛ لینک‌هایی که محدودیت اختصاصی دارند از عدد خودشان استفاده می‌کنند.</span></label>
+<label>محدودیت کاربر/دستگاه پیش‌فرض لینک‌های ساب<input name="subscription_device_limit" type="number" min="0" value="{panel.subscription_device_limit}"><span>0 یعنی نامحدود؛ لینک‌هایی که محدودیت اختصاصی دارند از عدد خودشان استفاده می‌کنند.</span></label>
 <label>رنگ اصلی<input name="primary_color" type="color" value="{panel.primary_color}"></label><label>رنگ وضعیت<input name="accent_color" type="color" value="{panel.accent_color}"></label>
 <label>رنگ پس‌زمینه<input name="background_color" type="color" value="{panel.background_color}"></label><label>رنگ کارت‌ها<input name="card_color" type="color" value="{panel.card_color}"></label>
 <label>رنگ متن اصلی<input name="text_color" type="color" value="{panel.text_color}"></label><label>رنگ متن فرعی<input name="muted_text_color" type="color" value="{panel.muted_text_color}"></label>
@@ -865,4 +911,4 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
 <label class="toggle"><input name="show_config_copy" type="checkbox" {checked['copy']}> نمایش کپی هر کانفیگ</label>
 <label class="toggle"><input name="show_config_qr" type="checkbox" {checked['qr']}> نمایش QR هر کانفیگ</label>
 </div><div class="actions"><button>ذخیره تنظیمات</button></div></form></section>
-<section class="card"><h2>لینک‌های ثبت‌شده</h2><div class="table-wrap"><table><thead><tr><th>نام</th><th>نام اختصاصی برنامه</th><th>محدودیت دستگاه</th><th>حجم</th><th>لینک اختصاصی</th><th>لینک اصلی</th><th></th></tr></thead><tbody>{rows}</tbody></table></div></section></main></body></html>"""
+<section class="card"><h2>لینک‌های ثبت‌شده</h2><div class="table-wrap"><table><thead><tr><th>نام</th><th>نام اختصاصی برنامه</th><th>محدودیت کاربر/دستگاه</th><th>حجم</th><th>لینک اختصاصی</th><th>لینک اصلی</th><th></th></tr></thead><tbody>{rows}</tbody></table></div></section></main></body></html>"""
