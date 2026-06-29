@@ -711,9 +711,11 @@ def _subscription_title_headers(title: str) -> dict[str, str]:
     safe_title = title.strip() or "Subscription"
     quoted_title = quote(safe_title, safe="")
     encoded_title = base64.b64encode(safe_title.encode("utf-8")).decode("ascii")
+    ascii_filename = "".join(ch if 32 <= ord(ch) < 127 and ch not in {'"', "\\", ";"} else "_" for ch in safe_title)
+    ascii_filename = (ascii_filename.strip() or "Subscription")[:80]
     return {
         "profile-title": f"base64:{encoded_title}",
-        "content-disposition": f"inline; filename*=UTF-8''{quoted_title}.txt",
+        "content-disposition": f"inline; filename=\"{ascii_filename}.txt\"; filename*=UTF-8''{quoted_title}.txt",
     }
 
 
