@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Column, Integer, String
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -22,6 +22,22 @@ class Config(Base):
     is_sold = Column(Boolean, default=False)
     service_name = Column(String, nullable=True)
     profile_title = Column(String, nullable=True)
+    device_limit = Column(Integer, nullable=True)
+
+
+class SubscriptionDevice(Base):
+    __tablename__ = "subscription_devices"
+    __table_args__ = (
+        UniqueConstraint("public_sub_token", "fingerprint", name="uq_subscription_device_fingerprint"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    public_sub_token = Column(String, nullable=False, index=True)
+    fingerprint = Column(String, nullable=False)
+    user_agent = Column(String, nullable=True)
+    ip_hint = Column(String, nullable=True)
+    first_seen_at = Column(DateTime, nullable=False)
+    last_seen_at = Column(DateTime, nullable=False)
 
 
 engine = create_async_engine(settings.panel_db_url, echo=False)

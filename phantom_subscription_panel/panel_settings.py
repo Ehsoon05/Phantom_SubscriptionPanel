@@ -10,6 +10,7 @@ from .config import settings
 class PanelSettings:
     brand_name: str = "Phantom Hubs"
     subscription_profile_title: str = ""
+    subscription_device_limit: int = 0
     primary_color: str = "#426df8"
     accent_color: str = "#22c55e"
     background_color: str = "#0f172a"

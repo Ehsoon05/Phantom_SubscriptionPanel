@@ -19,11 +19,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import select, text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .config import settings
-from .database import Base, Config, async_session, engine
+from .database import Base, Config, SubscriptionDevice, async_session, engine
 from .panel_settings import PanelSettings, load_panel_settings, save_panel_settings
 
 
@@ -56,10 +56,12 @@ class ConfigSyncPayload(BaseModel):
     category_key: str = "default"
     is_sold: bool = False
     service_name: str | None = None
+    device_limit: int | None = None
 
 
 class PanelSettingsSyncPayload(BaseModel):
     subscription_profile_title: str = ""
+    subscription_device_limit: int | None = None
 
 
 @app.on_event("startup")
@@ -69,6 +71,10 @@ async def startup() -> None:
         await conn.run_sync(Base.metadata.create_all)
         try:
             await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN profile_title VARCHAR"))
+        except SQLAlchemyError:
+            pass
+        try:
+            await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN device_limit INTEGER"))
         except SQLAlchemyError:
             pass
     settings.subscription_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -113,9 +119,11 @@ async def subscription(token: str, request: Request) -> Response:
     if _wants_html(request):
         return HTMLResponse(_render_subscription_page(config, upstream))
 
+    await _enforce_device_limit(config, request)
+
     response_headers = {"Cache-Control": "no-store, no-cache, must-revalidate", "X-Content-Type-Options": "nosniff"}
     response_headers.update(upstream["forward_headers"])
-    response_headers.update(_subscription_title_headers(_display_title_for_subscription(config, upstream)))
+    response_headers.update(_subscription_title_headers(_app_title_for_subscription(config, upstream)))
     return Response(
         content=upstream["body"],
         media_type=upstream["content_type"] or "text/plain; charset=utf-8",
@@ -142,6 +150,7 @@ async def admin_form(_: str = Depends(_require_admin)) -> str:
 async def admin_save_settings(
     brand_name: str = Form(...),
     subscription_profile_title: str = Form(default=""),
+    subscription_device_limit: str = Form(default="0"),
     primary_color: str = Form(...),
     accent_color: str = Form(...),
     background_color: str = Form(...),
@@ -192,6 +201,7 @@ async def admin_save_settings(
     panel = PanelSettings(
         brand_name=brand_name.strip() or "Phantom Hubs",
         subscription_profile_title=subscription_profile_title.strip(),
+        subscription_device_limit=_positive_int(subscription_device_limit),
         primary_color=_normalize_color(primary_color, "#426df8"),
         accent_color=_normalize_color(accent_color, "#22c55e"),
         background_color=_normalize_color(background_color, "#0f172a"),
@@ -248,6 +258,7 @@ async def admin_create_subscription(
     token: str = Form(default=""),
     service_name: str = Form(default=""),
     profile_title: str = Form(default=""),
+    device_limit: str = Form(default="0"),
     volume_gb: int = Form(default=0),
     category_key: str = Form(default="manual"),
     _: str = Depends(_require_admin),
@@ -268,6 +279,7 @@ async def admin_create_subscription(
         config.category_key = category_key.strip() or "manual"
         config.service_name = service_name.strip() or None
         config.profile_title = profile_title.strip() or None
+        config.device_limit = _positive_int(device_limit) or None
         await session.commit()
     public_url = f"{settings.public_base_url}/token/{quote(token, safe='')}"
     return await _render_admin(load_panel_settings(), notice=f"لینک اختصاصی ساخته شد: {public_url}")
@@ -297,6 +309,7 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
         config.category_key = payload.category_key
         config.is_sold = payload.is_sold
         config.service_name = payload.service_name
+        config.device_limit = max(0, int(payload.device_limit or 0)) or None
         await session.commit()
     _schedule_cache_refresh(payload.upstream_url)
     return "ok"
@@ -307,6 +320,8 @@ async def sync_panel_settings(payload: PanelSettingsSyncPayload, authorization: 
     _require_sync_token(authorization)
     panel = load_panel_settings()
     panel.subscription_profile_title = payload.subscription_profile_title.strip()
+    if payload.subscription_device_limit is not None:
+        panel.subscription_device_limit = max(0, int(payload.subscription_device_limit or 0))
     save_panel_settings(panel)
     return "ok"
 
@@ -528,6 +543,13 @@ def _normalize_color(value: str, fallback: str) -> str:
     return fallback
 
 
+def _positive_int(value: str | int | None) -> int:
+    try:
+        return max(0, int(str(value or "").strip() or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _clean_token(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "", value.strip())[:160]
 
@@ -599,7 +621,7 @@ def _upstream_title(headers: httpx.Headers) -> str:
     return disposition_title or profile_title or "Subscription"
 
 
-def _display_title_for_subscription(config: Config, upstream: dict) -> str:
+def _app_title_for_subscription(config: Config, upstream: dict) -> str:
     panel = load_panel_settings()
     return (
         config.profile_title
@@ -610,11 +632,87 @@ def _display_title_for_subscription(config: Config, upstream: dict) -> str:
     ).strip()
 
 
+def _web_title_for_subscription(config: Config, upstream: dict) -> str:
+    return (upstream["title"] or config.service_name or "Subscription").strip()
+
+
+def _device_limit_for_subscription(config: Config) -> int:
+    if config.device_limit is not None:
+        return max(0, int(config.device_limit))
+    return max(0, int(load_panel_settings().subscription_device_limit or 0))
+
+
+def _client_ip_hint(request: Request) -> str:
+    for header in ("cf-connecting-ip", "x-real-ip", "x-forwarded-for"):
+        value = request.headers.get(header, "").split(",", 1)[0].strip()
+        if value:
+            return value
+    return request.client.host if request.client else ""
+
+
+def _device_fingerprint(request: Request) -> tuple[str, str, str]:
+    user_agent = request.headers.get("user-agent", "").strip()[:300]
+    accept_language = request.headers.get("accept-language", "").strip()[:120]
+    ip_hint = _client_ip_hint(request)[:120]
+    seed = "\n".join([user_agent, accept_language, ip_hint])
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest(), user_agent, ip_hint
+
+
+async def _enforce_device_limit(config: Config, request: Request) -> None:
+    limit = _device_limit_for_subscription(config)
+    if limit <= 0:
+        return
+    fingerprint, user_agent, ip_hint = _device_fingerprint(request)
+    now = datetime.now(timezone.utc)
+    async with async_session() as session:
+        existing = (
+            await session.execute(
+                select(SubscriptionDevice).where(
+                    SubscriptionDevice.public_sub_token == config.public_sub_token,
+                    SubscriptionDevice.fingerprint == fingerprint,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.last_seen_at = now
+            await session.commit()
+            return
+
+        count = (
+            await session.execute(
+                select(func.count(SubscriptionDevice.id)).where(
+                    SubscriptionDevice.public_sub_token == config.public_sub_token
+                )
+            )
+        ).scalar_one()
+        if int(count or 0) >= limit:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Device limit reached for this subscription ({limit}).",
+            )
+
+        session.add(
+            SubscriptionDevice(
+                public_sub_token=config.public_sub_token,
+                fingerprint=fingerprint,
+                user_agent=user_agent,
+                ip_hint=ip_hint,
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+        )
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+
+
 def _subscription_title_headers(title: str) -> dict[str, str]:
     safe_title = title.strip() or "Subscription"
     quoted_title = quote(safe_title, safe="")
+    encoded_title = base64.b64encode(safe_title.encode("utf-8")).decode("ascii")
     return {
-        "profile-title": quoted_title,
+        "profile-title": f"base64:{encoded_title}",
         "content-disposition": f"inline; filename*=UTF-8''{quoted_title}.txt",
     }
 
@@ -675,8 +773,8 @@ def _render_subscription_page(config: Config, upstream: dict) -> str:
         else ""
     )
     channel_url = f"https://t.me/{panel.channel_handle.lstrip('@')}"
-    display_title = _display_title_for_subscription(config, upstream)
-    title = html.escape(display_title)
+    app_title = _app_title_for_subscription(config, upstream)
+    title = html.escape(_web_title_for_subscription(config, upstream))
     upstream_total = usage.get("total", 0)
     purchased_volume = _format_compact_gb(upstream_total) if upstream_total else (
         f"{config.volume_gb}GB" if config.volume_gb else "نامشخص"
@@ -684,7 +782,7 @@ def _render_subscription_page(config: Config, upstream: dict) -> str:
     quick_connect = ""
     if panel.show_quick_connect:
         encoded_url = quote(public_url, safe="")
-        encoded_title = quote(display_title, safe="")
+        encoded_title = quote(app_title, safe="")
         quick_connect = (
             f"<div class='section-title spaced'>{html.escape(panel.apps_title)}</div>"
             f"<p class='apps-help'>{html.escape(panel.apps_help_text)}</p><div class='btn-grid'>"
@@ -720,9 +818,9 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
         result = await session.execute(select(Config).order_by(Config.id.desc()))
         configs = list(result.scalars().all())
     rows = "".join(
-        f"""<tr><td>{html.escape(config.service_name or "-")}</td><td>{html.escape(config.profile_title or "-")}</td><td>{config.volume_gb or "-"}</td><td><a href="{settings.public_base_url}/token/{quote(config.public_sub_token, safe='')}" target="_blank">بازکردن</a></td><td class="ltr">{html.escape(config.sub_link)}</td><td><form method="post" action="/admin/subscriptions/{config.id}/delete"><button class="danger">حذف</button></form></td></tr>"""
+        f"""<tr><td>{html.escape(config.service_name or "-")}</td><td>{html.escape(config.profile_title or "-")}</td><td>{config.device_limit if config.device_limit is not None else "-"}</td><td>{config.volume_gb or "-"}</td><td><a href="{settings.public_base_url}/token/{quote(config.public_sub_token, safe='')}" target="_blank">بازکردن</a></td><td class="ltr">{html.escape(config.sub_link)}</td><td><form method="post" action="/admin/subscriptions/{config.id}/delete"><button class="danger">حذف</button></form></td></tr>"""
         for config in configs
-    ) or "<tr><td colspan='6'>هنوز لینکی ثبت نشده است.</td></tr>"
+    ) or "<tr><td colspan='7'>هنوز لینکی ثبت نشده است.</td></tr>"
     flash = f"<div class='notice'>{html.escape(notice)}</div>" if notice else f"<div class='error'>{html.escape(error)}</div>" if error else ""
     checked = {
         "quick": "checked" if panel.show_quick_connect else "",
@@ -733,10 +831,11 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
     }
     return f"""<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>مدیریت پنل اشتراک</title><link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet"><style>
 *{{box-sizing:border-box;letter-spacing:0}}body{{margin:0;background:#f4f7fb;color:#172033;font-family:Vazirmatn,Tahoma,sans-serif}}main{{max-width:1100px;margin:auto;padding:24px 16px 50px}}header{{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}}h1{{font-size:25px;margin:0}}h2{{font-size:18px;margin:0 0 16px}}.card{{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:20px;margin-bottom:16px;box-shadow:0 8px 24px rgba(15,23,42,.05)}}.grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}}label{{display:grid;gap:6px;color:#64748b;font-size:13px}}input,textarea{{border:1px solid #cbd5e1;border-radius:8px;padding:11px;font:inherit;color:#172033}}textarea{{min-height:88px;resize:vertical}}button{{border:0;border-radius:8px;background:{panel.primary_color};color:white;padding:11px 16px;font:inherit;font-weight:700;cursor:pointer}}.danger{{background:#dc2626;padding:7px 10px}}.wide{{grid-column:1/-1}}.notice,.error{{padding:11px;border-radius:8px;margin-bottom:16px;overflow-wrap:anywhere}}.notice{{background:#dcfce7;color:#166534}}.error{{background:#fee2e2;color:#991b1b}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:10px;border-bottom:1px solid #e2e8f0;text-align:right;vertical-align:middle}}td.ltr{{direction:ltr;text-align:left;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}a{{color:{panel.primary_color};font-weight:700}}.actions{{display:flex;justify-content:flex-end;margin-top:14px}}.toggle{{display:flex;align-items:center;gap:8px}}@media(max-width:700px){{.grid{{grid-template-columns:1fr}}.wide{{grid-column:auto}}.table-wrap{{overflow:auto}}}}</style></head><body><main><header><div><h1>مدیریت Phantom Subscription</h1><span>ساخته‌شده بر پایه ظاهر marzban-template</span></div><a href="{settings.public_base_url}/health">وضعیت سرویس</a></header>{flash}
-<section class="card"><h2>تبدیل دستی لینک ساب</h2><form method="post" action="/admin/subscriptions"><div class="grid"><label class="wide">لینک اصلی سابسکریپشن<input name="upstream_url" type="url" required placeholder="https://example.com/token/..."></label><label>توکن دلخواه، اختیاری<input name="token" placeholder="اگر خالی باشد خودکار ساخته می‌شود"></label><label>نام سرویس<input name="service_name"></label><label>نام نمایشی اختصاصی داخل برنامه‌ها<input name="profile_title" placeholder="فقط برای همین لینک"></label><label>حجم گیگ<input name="volume_gb" type="number" min="0" value="0"></label><label>دسته‌بندی<input name="category_key" value="manual"></label></div><div class="actions"><button>ساخت لینک اختصاصی</button></div></form></section>
+<section class="card"><h2>تبدیل دستی لینک ساب</h2><form method="post" action="/admin/subscriptions"><div class="grid"><label class="wide">لینک اصلی سابسکریپشن<input name="upstream_url" type="url" required placeholder="https://example.com/token/..."></label><label>توکن دلخواه، اختیاری<input name="token" placeholder="اگر خالی باشد خودکار ساخته می‌شود"></label><label>نام سرویس<input name="service_name"></label><label>نام نمایشی اختصاصی داخل برنامه‌ها<input name="profile_title" placeholder="فقط برای همین لینک"></label><label>محدودیت دستگاه همین لینک<input name="device_limit" type="number" min="0" value="0" placeholder="0 یعنی پیش‌فرض عمومی"></label><label>حجم گیگ<input name="volume_gb" type="number" min="0" value="0"></label><label>دسته‌بندی<input name="category_key" value="manual"></label></div><div class="actions"><button>ساخت لینک اختصاصی</button></div></form></section>
 <section class="card"><h2>تنظیمات کامل قالب</h2><form method="post" action="/admin/settings"><div class="grid">
 <label>نام برند<input name="brand_name" value="{html.escape(panel.brand_name)}"></label><label>آیدی کانال<input name="channel_handle" value="{html.escape(panel.channel_handle)}"></label>
 <label class="wide">نام نمایشی سابسکریپشن داخل برنامه‌ها<input name="subscription_profile_title" value="{html.escape(panel.subscription_profile_title)}" placeholder="خالی باشد، نام لینک اصلی یا نام سرویس استفاده می‌شود"></label>
+<label>محدودیت دستگاه پیش‌فرض لینک‌های ساب<input name="subscription_device_limit" type="number" min="0" value="{panel.subscription_device_limit}"><span>0 یعنی خاموش؛ لینک‌هایی که محدودیت اختصاصی دارند از عدد خودشان استفاده می‌کنند.</span></label>
 <label>رنگ اصلی<input name="primary_color" type="color" value="{panel.primary_color}"></label><label>رنگ وضعیت<input name="accent_color" type="color" value="{panel.accent_color}"></label>
 <label>رنگ پس‌زمینه<input name="background_color" type="color" value="{panel.background_color}"></label><label>رنگ کارت‌ها<input name="card_color" type="color" value="{panel.card_color}"></label>
 <label>رنگ متن اصلی<input name="text_color" type="color" value="{panel.text_color}"></label><label>رنگ متن فرعی<input name="muted_text_color" type="color" value="{panel.muted_text_color}"></label>
@@ -764,4 +863,4 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
 <label class="toggle"><input name="show_config_copy" type="checkbox" {checked['copy']}> نمایش کپی هر کانفیگ</label>
 <label class="toggle"><input name="show_config_qr" type="checkbox" {checked['qr']}> نمایش QR هر کانفیگ</label>
 </div><div class="actions"><button>ذخیره تنظیمات</button></div></form></section>
-<section class="card"><h2>لینک‌های ثبت‌شده</h2><div class="table-wrap"><table><thead><tr><th>نام</th><th>نام اختصاصی برنامه</th><th>حجم</th><th>لینک اختصاصی</th><th>لینک اصلی</th><th></th></tr></thead><tbody>{rows}</tbody></table></div></section></main></body></html>"""
+<section class="card"><h2>لینک‌های ثبت‌شده</h2><div class="table-wrap"><table><thead><tr><th>نام</th><th>نام اختصاصی برنامه</th><th>محدودیت دستگاه</th><th>حجم</th><th>لینک اختصاصی</th><th>لینک اصلی</th><th></th></tr></thead><tbody>{rows}</tbody></table></div></section></main></body></html>"""
