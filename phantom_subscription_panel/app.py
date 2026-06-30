@@ -310,7 +310,11 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
         config.category_key = payload.category_key
         config.is_sold = payload.is_sold
         config.service_name = payload.service_name
-        config.device_limit = max(0, int(payload.device_limit or 0)) or None
+        config.device_limit = (
+            max(0, int(payload.device_limit))
+            if payload.device_limit is not None
+            else None
+        )
         await session.commit()
     _schedule_cache_refresh(payload.upstream_url)
     return "ok"
