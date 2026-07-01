@@ -23,6 +23,9 @@ class Config(Base):
     service_name = Column(String, nullable=True)
     profile_title = Column(String, nullable=True)
     device_limit = Column(Integer, nullable=True)
+    show_header = Column(Boolean, nullable=True)
+    channel_handle = Column(String, nullable=True)
+    show_config_preview = Column(Boolean, nullable=True)
 
 
 class SubscriptionDevice(Base):

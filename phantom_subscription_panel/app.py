@@ -57,6 +57,9 @@ class ConfigSyncPayload(BaseModel):
     is_sold: bool = False
     service_name: str | None = None
     device_limit: int | None = None
+    show_config_preview: bool | None = None
+    show_header: bool | None = None
+    channel_handle: str | None = None
 
 
 class PanelSettingsSyncPayload(BaseModel):
@@ -75,6 +78,18 @@ async def startup() -> None:
             pass
         try:
             await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN device_limit INTEGER"))
+        except SQLAlchemyError:
+            pass
+        try:
+            await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN show_header BOOLEAN"))
+        except SQLAlchemyError:
+            pass
+        try:
+            await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN channel_handle VARCHAR"))
+        except SQLAlchemyError:
+            pass
+        try:
+            await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN show_config_preview BOOLEAN"))
         except SQLAlchemyError:
             pass
     settings.subscription_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -260,6 +275,9 @@ async def admin_create_subscription(
     service_name: str = Form(default=""),
     profile_title: str = Form(default=""),
     device_limit: str = Form(default="0"),
+    show_header: str | None = Form(default=None),
+    channel_handle: str = Form(default=""),
+    show_config_preview: str | None = Form(default=None),
     volume_gb: int = Form(default=0),
     category_key: str = Form(default="manual"),
     _: str = Depends(_require_admin),
@@ -281,6 +299,9 @@ async def admin_create_subscription(
         config.service_name = service_name.strip() or None
         config.profile_title = profile_title.strip() or None
         config.device_limit = _positive_int(device_limit)
+        config.show_header = show_header == "on"
+        config.channel_handle = channel_handle.strip() or None
+        config.show_config_preview = show_config_preview == "on"
         await session.commit()
     public_url = f"{settings.public_base_url}/token/{quote(token, safe='')}"
     return await _render_admin(load_panel_settings(), notice=f"لینک اختصاصی ساخته شد: {public_url}")
@@ -310,6 +331,24 @@ async def admin_update_subscription_device_limit(
     return RedirectResponse("/admin", status_code=303)
 
 
+@app.post("/admin/subscriptions/{config_id}/display")
+async def admin_update_subscription_display(
+    config_id: int,
+    show_header: str | None = Form(default=None),
+    channel_handle: str = Form(default=""),
+    show_config_preview: str | None = Form(default=None),
+    _: str = Depends(_require_admin),
+) -> RedirectResponse:
+    async with async_session() as session:
+        config = await session.get(Config, config_id)
+        if config:
+            config.show_header = show_header == "on"
+            config.channel_handle = channel_handle.strip() or None
+            config.show_config_preview = show_config_preview == "on"
+            await session.commit()
+    return RedirectResponse("/admin", status_code=303)
+
+
 @app.post("/internal/configs", response_class=PlainTextResponse)
 async def sync_config(payload: ConfigSyncPayload, authorization: str | None = Header(default=None)) -> str:
     _require_sync_token(authorization)
@@ -329,6 +368,12 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
             if payload.device_limit is not None
             else None
         )
+        if payload.show_config_preview is not None:
+            config.show_config_preview = bool(payload.show_config_preview)
+        if payload.show_header is not None:
+            config.show_header = bool(payload.show_header)
+        if payload.channel_handle is not None:
+            config.channel_handle = payload.channel_handle.strip() or None
         await session.commit()
     _schedule_cache_refresh(payload.upstream_url)
     return "ok"
@@ -805,8 +850,15 @@ def _format_compact_gb(value: int) -> str:
     return f"{size_gb:g}GB"
 
 
+def _config_bool(value: bool | None, default: bool) -> bool:
+    return default if value is None else bool(value)
+
+
 def _render_subscription_page(config: Config, upstream: dict, web_title: str = "") -> str:
     panel = load_panel_settings()
+    show_header = _config_bool(config.show_header, True)
+    show_config_preview = _config_bool(config.show_config_preview, panel.show_config_preview)
+    channel_handle = (config.channel_handle or panel.channel_handle).strip()
     usage = upstream["usage"]
     used = usage.get("upload", 0) + usage.get("download", 0)
     total = usage.get("total", 0) or max(config.volume_gb, 0) * 1024**3
@@ -835,10 +887,10 @@ def _render_subscription_page(config: Config, upstream: dict, web_title: str = "
     preview = (
         f"<section class='glass-card'><div class='section-title'>{html.escape(panel.configs_title)}</div>"
         f"<div class='proxy-list'>{preview_content}</div></section>"
-        if panel.show_config_preview
+        if show_config_preview
         else ""
     )
-    channel_url = f"https://t.me/{panel.channel_handle.lstrip('@')}"
+    channel_url = f"https://t.me/{channel_handle.lstrip('@')}"
     app_title = _app_title_for_subscription(config, upstream)
     title = html.escape(web_title or _web_title_for_subscription(config, upstream))
     upstream_total = usage.get("total", 0)
@@ -861,6 +913,11 @@ def _render_subscription_page(config: Config, upstream: dict, web_title: str = "
         f"<a class='link-btn channel-btn' style='background:{panel.channel_button_color}' href='{html.escape(channel_url)}'>{html.escape(panel.channel_button_text)}</a>"
         if panel.show_channel_button else ""
     )
+    brand_header = (
+        '<div class="brand-header"><img src="/static/header.png" alt="Phantom Hubs"></div>'
+        if show_header
+        else ""
+    )
     return f"""<!doctype html>
 <html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
@@ -870,7 +927,7 @@ def _render_subscription_page(config: Config, upstream: dict, web_title: str = "
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
 *{{box-sizing:border-box;letter-spacing:0}}:root{{--primary:{panel.primary_color};--accent:{panel.accent_color};--bg:{panel.background_color};--card:{panel.card_color};--text:{panel.text_color};--muted:{panel.muted_text_color};--secondary:{panel.secondary_button_color};--border:color-mix(in srgb,var(--text) 18%,transparent)}}body{{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:Vazirmatn,Tahoma,sans-serif}}.background{{position:fixed;inset:0;z-index:-1;background:linear-gradient(145deg,var(--bg),color-mix(in srgb,var(--primary) 16%,var(--bg)))}}.container{{max-width:800px;margin:auto;padding:28px 16px 48px}}.brand-header{{display:flex;justify-content:center;align-items:center;width:100%;margin:0 auto 24px}}.brand-header img{{display:block;width:min(100%,680px);height:auto;aspect-ratio:1080/267;object-fit:contain}}.glass-card{{background:color-mix(in srgb,var(--card) 92%,transparent);border:1px solid var(--border);backdrop-filter:blur(14px);border-radius:8px;padding:20px;margin-bottom:18px;box-shadow:0 20px 50px rgba(0,0,0,.2);content-visibility:auto;contain-intrinsic-size:260px}}.header{{display:flex;justify-content:space-between;gap:16px;align-items:center}}.header-copy{{min-width:0}}.header-labels{{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}}h1{{font-size:24px;margin:0 0 6px;overflow-wrap:anywhere}}p{{color:var(--muted);line-height:1.9;margin:0}}.status,.volume-badge{{padding:8px 12px;border-radius:8px;white-space:nowrap;flex:0 0 auto}}.status{{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 40%,transparent)}}.volume-badge{{background:color-mix(in srgb,var(--primary) 18%,transparent);color:color-mix(in srgb,var(--primary) 65%,white);border:1px solid color-mix(in srgb,var(--primary) 48%,transparent)}}.stats-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:18px}}.stat-card{{background:color-mix(in srgb,var(--text) 6%,transparent);border:1px solid var(--border);border-radius:8px;padding:16px}}.stat-label{{color:var(--muted);font-size:13px}}.stat-value{{font-size:19px;font-weight:800;margin-top:6px}}.progress{{height:8px;background:color-mix(in srgb,var(--text) 10%,transparent);border-radius:4px;overflow:hidden;margin-top:12px}}.progress i{{display:block;height:100%;width:{percent}%;background:var(--primary)}}.subscription-container{{display:flex;gap:10px;align-items:stretch}}.subscription-url{{direction:ltr;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;padding:13px;background:color-mix(in srgb,var(--text) 6%,transparent);border:1px solid var(--border);border-radius:8px;color:var(--muted)}}button,.link-btn{{border:0;border-radius:8px;padding:12px 15px;background:var(--primary);color:#fff;font:inherit;font-weight:700;cursor:pointer;text-decoration:none;text-align:center}}.btn-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}}.secondary{{background:var(--secondary);border:1px solid var(--border)}}.channel-btn{{display:block;margin-top:10px}}.section-title{{font-weight:800;margin-bottom:12px}}.spaced{{margin-top:20px;margin-bottom:4px}}.apps-help{{font-size:13px;margin-bottom:12px}}.proxy-list{{display:grid;gap:8px}}.proxy-item{{direction:ltr;text-align:left;background:color-mix(in srgb,var(--text) 5%,transparent);padding:10px;border-radius:8px;display:flex;gap:10px;align-items:center;overflow:hidden}}.proxy-copy{{min-width:0;flex:1}}.proxy-item strong{{direction:rtl;text-align:right;display:block;margin-bottom:4px}}.proxy-item span{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-family:monospace}}.proxy-actions{{display:flex;gap:6px}}.mini-btn{{padding:7px 10px;font-size:12px;white-space:nowrap}}.empty,.foot{{color:var(--muted);text-align:center}}#toast{{position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);background:var(--text);color:var(--bg);padding:10px 16px;border-radius:8px;font-weight:700;opacity:0;visibility:hidden;transition:.2s;z-index:10;box-shadow:0 10px 30px rgba(0,0,0,.3);white-space:nowrap}}#toast.show{{opacity:1;visibility:visible;transform:translate(-50%,0)}}#qr-modal{{display:none;position:fixed;inset:0;background:rgba(2,6,23,.9);align-items:center;justify-content:center;z-index:5}}#qr-modal.open{{display:flex}}#qrcode{{background:#fff;padding:16px;border-radius:8px}}@media(max-width:600px){{.container{{padding-top:20px}}.brand-header{{margin-bottom:18px}}.header{{flex-direction:column;align-items:flex-start;gap:10px}}.header-copy{{width:100%}}.header-labels{{justify-content:flex-start}}.status,.volume-badge{{padding:6px 10px}}.subscription-container{{flex-direction:column;align-items:stretch}}.stats-grid,.btn-grid{{grid-template-columns:1fr}}.proxy-item{{align-items:stretch;flex-direction:column}}.proxy-actions{{direction:rtl}}}}
-</style></head><body><div class="background"></div><main class="container"><div class="brand-header"><img src="/static/header.png" alt="Phantom Hubs"></div>
+</style></head><body><div class="background"></div><main class="container">{brand_header}
 <section class="glass-card"><div class="header"><div class="header-copy"><h1>{title}</h1><p>{html.escape(panel.hero_text)}</p></div><div class="header-labels"><div class="status">{html.escape(panel.active_status_text)}</div><div class="volume-badge">{purchased_volume}</div></div></div>
 <div class="stats-grid"><div class="stat-card"><div class="stat-label">{html.escape(panel.used_label)}</div><div class="stat-value">{_format_bytes(used)}</div><div class="progress"><i></i></div></div><div class="stat-card"><div class="stat-label">{html.escape(panel.remaining_label)}</div><div class="stat-value">{_format_bytes(remaining)}</div></div><div class="stat-card"><div class="stat-label">{html.escape(panel.expiry_label)}</div><div class="stat-value">{expire_text}</div></div><div class="stat-card"><div class="stat-label">{html.escape(panel.config_count_label)}</div><div class="stat-value">{len(upstream['lines'])}</div></div></div></section>
 <section class="glass-card"><div class="section-title">{html.escape(panel.subscription_title)}</div><div class="subscription-container"><div class="subscription-url">{html.escape(public_url)}</div><button style="background:{panel.copy_button_color}" onclick="copyText(link)">{html.escape(panel.copy_button_text)}</button><button style="background:{panel.qr_button_color}" onclick="showQR(link)">{html.escape(panel.qr_button_text)}</button></div>
@@ -883,10 +940,15 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
     async with async_session() as session:
         result = await session.execute(select(Config).order_by(Config.id.desc()))
         configs = list(result.scalars().all())
-    rows = "".join(
-        f"""<tr><td>{html.escape(config.service_name or "-")}</td><td>{html.escape(config.profile_title or "-")}</td><td><form class="inline-form" method="post" action="/admin/subscriptions/{config.id}/device-limit"><input name="device_limit" type="number" min="0" value="{config.device_limit if config.device_limit is not None else 0}" title="0 یعنی نامحدود"><button>ثبت</button></form></td><td>{"نامحدود" if not config.volume_gb else str(config.volume_gb)}</td><td><a href="{settings.public_base_url}/token/{quote(config.public_sub_token, safe='')}" target="_blank">بازکردن</a></td><td class="ltr">{html.escape(config.sub_link)}</td><td><form method="post" action="/admin/subscriptions/{config.id}/delete"><button class="danger">حذف</button></form></td></tr>"""
-        for config in configs
-    ) or "<tr><td colspan='7'>هنوز لینکی ثبت نشده است.</td></tr>"
+
+    def row(config: Config) -> str:
+        public_url = f"{settings.public_base_url}/token/{quote(config.public_sub_token, safe='')}"
+        header_checked = "checked" if _config_bool(config.show_header, True) else ""
+        preview_checked = "checked" if _config_bool(config.show_config_preview, panel.show_config_preview) else ""
+        channel_value = html.escape(config.channel_handle or "")
+        return f"""<tr><td>{html.escape(config.service_name or "-")}</td><td>{html.escape(config.profile_title or "-")}</td><td><form class="inline-form" method="post" action="/admin/subscriptions/{config.id}/device-limit"><input name="device_limit" type="number" min="0" value="{config.device_limit if config.device_limit is not None else 0}" title="0 یعنی نامحدود"><button>ثبت</button></form></td><td>{"نامحدود" if not config.volume_gb else str(config.volume_gb)}</td><td><form class="stack-form" method="post" action="/admin/subscriptions/{config.id}/display"><label class="tiny-toggle"><input name="show_header" type="checkbox" {header_checked}> هدر</label><label class="tiny-toggle"><input name="show_config_preview" type="checkbox" {preview_checked}> کانفیگ‌ها</label><input name="channel_handle" value="{channel_value}" placeholder="@SupportChannel"><button>ذخیره</button></form></td><td><a href="{public_url}" target="_blank">بازکردن</a><button type="button" class="copy-admin" onclick="copyAdminLink({html.escape(json.dumps(public_url), quote=True)})">کپی</button></td><td class="ltr">{html.escape(config.sub_link)}</td><td><form method="post" action="/admin/subscriptions/{config.id}/delete"><button class="danger">حذف</button></form></td></tr>"""
+
+    rows = "".join(row(config) for config in configs) or "<tr><td colspan='8'>هنوز لینکی ثبت نشده است.</td></tr>"
     flash = f"<div class='notice'>{html.escape(notice)}</div>" if notice else f"<div class='error'>{html.escape(error)}</div>" if error else ""
     checked = {
         "quick": "checked" if panel.show_quick_connect else "",
@@ -896,8 +958,8 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
         "qr": "checked" if panel.show_config_qr else "",
     }
     return f"""<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>مدیریت پنل اشتراک</title><link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet"><style>
-*{{box-sizing:border-box;letter-spacing:0}}body{{margin:0;background:#f4f7fb;color:#172033;font-family:Vazirmatn,Tahoma,sans-serif}}main{{max-width:1100px;margin:auto;padding:24px 16px 50px}}header{{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}}h1{{font-size:25px;margin:0}}h2{{font-size:18px;margin:0 0 16px}}.card{{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:20px;margin-bottom:16px;box-shadow:0 8px 24px rgba(15,23,42,.05)}}.grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}}label{{display:grid;gap:6px;color:#64748b;font-size:13px}}input,textarea{{border:1px solid #cbd5e1;border-radius:8px;padding:11px;font:inherit;color:#172033}}textarea{{min-height:88px;resize:vertical}}button{{border:0;border-radius:8px;background:{panel.primary_color};color:white;padding:11px 16px;font:inherit;font-weight:700;cursor:pointer}}.danger{{background:#dc2626;padding:7px 10px}}.wide{{grid-column:1/-1}}.notice,.error{{padding:11px;border-radius:8px;margin-bottom:16px;overflow-wrap:anywhere}}.notice{{background:#dcfce7;color:#166534}}.error{{background:#fee2e2;color:#991b1b}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:10px;border-bottom:1px solid #e2e8f0;text-align:right;vertical-align:middle}}td.ltr{{direction:ltr;text-align:left;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}a{{color:{panel.primary_color};font-weight:700}}.actions{{display:flex;justify-content:flex-end;margin-top:14px}}.toggle{{display:flex;align-items:center;gap:8px}}.inline-form{{display:flex;gap:6px;align-items:center}}.inline-form input{{width:82px;padding:7px}}.inline-form button{{padding:7px 10px}}@media(max-width:700px){{.grid{{grid-template-columns:1fr}}.wide{{grid-column:auto}}.table-wrap{{overflow:auto}}}}</style></head><body><main><header><div><h1>مدیریت Phantom Subscription</h1><span>ساخته‌شده بر پایه ظاهر marzban-template</span></div><a href="{settings.public_base_url}/health">وضعیت سرویس</a></header>{flash}
-<section class="card"><h2>تبدیل دستی لینک ساب</h2><form method="post" action="/admin/subscriptions"><div class="grid"><label class="wide">لینک اصلی سابسکریپشن<input name="upstream_url" type="url" required placeholder="https://example.com/token/..."></label><label>توکن دلخواه، اختیاری<input name="token" placeholder="اگر خالی باشد خودکار ساخته می‌شود"></label><label>نام سرویس<input name="service_name"></label><label>نام نمایشی اختصاصی داخل برنامه‌ها<input name="profile_title" placeholder="فقط برای همین لینک"></label><label>محدودیت کاربر/دستگاه همین لینک<input name="device_limit" type="number" min="0" value="0" placeholder="0 یعنی نامحدود"></label><label>حجم گیگ<input name="volume_gb" type="number" min="0" value="0"></label><label>دسته‌بندی<input name="category_key" value="manual"></label></div><div class="actions"><button>ساخت لینک اختصاصی</button></div></form></section>
+*{{box-sizing:border-box;letter-spacing:0}}body{{margin:0;background:#f4f7fb;color:#172033;font-family:Vazirmatn,Tahoma,sans-serif}}main{{max-width:1100px;margin:auto;padding:24px 16px 50px}}header{{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}}h1{{font-size:25px;margin:0}}h2{{font-size:18px;margin:0 0 16px}}.card{{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:20px;margin-bottom:16px;box-shadow:0 8px 24px rgba(15,23,42,.05)}}.grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}}label{{display:grid;gap:6px;color:#64748b;font-size:13px}}input,textarea{{border:1px solid #cbd5e1;border-radius:8px;padding:11px;font:inherit;color:#172033}}textarea{{min-height:88px;resize:vertical}}button{{border:0;border-radius:8px;background:{panel.primary_color};color:white;padding:11px 16px;font:inherit;font-weight:700;cursor:pointer}}.danger{{background:#dc2626;padding:7px 10px}}.wide{{grid-column:1/-1}}.notice,.error{{padding:11px;border-radius:8px;margin-bottom:16px;overflow-wrap:anywhere}}.notice{{background:#dcfce7;color:#166534}}.error{{background:#fee2e2;color:#991b1b}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:10px;border-bottom:1px solid #e2e8f0;text-align:right;vertical-align:middle}}td.ltr{{direction:ltr;text-align:left;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}a{{color:{panel.primary_color};font-weight:700}}.actions{{display:flex;justify-content:flex-end;margin-top:14px}}.toggle,.tiny-toggle{{display:flex;align-items:center;gap:8px}}.inline-form{{display:flex;gap:6px;align-items:center}}.inline-form input{{width:82px;padding:7px}}.inline-form button,.stack-form button,.copy-admin{{padding:7px 10px}}.stack-form{{display:grid;gap:6px;min-width:170px}}.stack-form input[type=text],.stack-form input:not([type]){{padding:7px}}.copy-admin{{display:block;margin-top:6px;background:#334155}}@media(max-width:700px){{.grid{{grid-template-columns:1fr}}.wide{{grid-column:auto}}.table-wrap{{overflow:auto}}}}</style></head><body><main><header><div><h1>مدیریت Phantom Subscription</h1><span>ساخته‌شده بر پایه ظاهر marzban-template</span></div><a href="{settings.public_base_url}/health">وضعیت سرویس</a></header>{flash}
+<section class="card"><h2>تبدیل دستی لینک ساب</h2><form method="post" action="/admin/subscriptions"><div class="grid"><label class="wide">لینک اصلی سابسکریپشن<input name="upstream_url" type="url" required placeholder="https://example.com/token/..."></label><label>توکن دلخواه، اختیاری<input name="token" placeholder="اگر خالی باشد خودکار ساخته می‌شود"></label><label>نام سرویس<input name="service_name"></label><label>نام نمایشی اختصاصی داخل برنامه‌ها<input name="profile_title" placeholder="فقط برای همین لینک"></label><label>محدودیت کاربر/دستگاه همین لینک<input name="device_limit" type="number" min="0" value="0" placeholder="0 یعنی نامحدود"></label><label>کانال/پشتیبانی اختصاصی<input name="channel_handle" placeholder="@PhantomHubsSupport"></label><label>حجم گیگ<input name="volume_gb" type="number" min="0" value="0"></label><label>دسته‌بندی<input name="category_key" value="manual"></label><label class="toggle"><input name="show_header" type="checkbox" checked> نمایش هدر سایت</label><label class="toggle"><input name="show_config_preview" type="checkbox" checked> نمایش کانفیگ‌های اشتراک</label></div><div class="actions"><button>ساخت لینک اختصاصی</button></div></form></section>
 <section class="card"><h2>تنظیمات کامل قالب</h2><form method="post" action="/admin/settings"><div class="grid">
 <label>نام برند<input name="brand_name" value="{html.escape(panel.brand_name)}"></label><label>آیدی کانال<input name="channel_handle" value="{html.escape(panel.channel_handle)}"></label>
 <label class="wide">نام نمایشی سابسکریپشن داخل برنامه‌ها<input name="subscription_profile_title" value="{html.escape(panel.subscription_profile_title)}" placeholder="خالی باشد، نام لینک اصلی یا نام سرویس استفاده می‌شود"></label>
@@ -929,4 +991,4 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
 <label class="toggle"><input name="show_config_copy" type="checkbox" {checked['copy']}> نمایش کپی هر کانفیگ</label>
 <label class="toggle"><input name="show_config_qr" type="checkbox" {checked['qr']}> نمایش QR هر کانفیگ</label>
 </div><div class="actions"><button>ذخیره تنظیمات</button></div></form></section>
-<section class="card"><h2>لینک‌های ثبت‌شده</h2><div class="table-wrap"><table><thead><tr><th>نام</th><th>نام اختصاصی برنامه</th><th>محدودیت کاربر/دستگاه</th><th>حجم</th><th>لینک اختصاصی</th><th>لینک اصلی</th><th></th></tr></thead><tbody>{rows}</tbody></table></div></section></main></body></html>"""
+<section class="card"><h2>لینک‌های ثبت‌شده</h2><div class="table-wrap"><table><thead><tr><th>نام</th><th>نام اختصاصی برنامه</th><th>محدودیت کاربر/دستگاه</th><th>حجم</th><th>نمایش/کانال</th><th>لینک اختصاصی</th><th>لینک اصلی</th><th></th></tr></thead><tbody>{rows}</tbody></table></div></section></main><script>async function copyAdminLink(value){{try{{await navigator.clipboard.writeText(value);alert('لینک کپی شد.')}}catch(error){{prompt('برای کپی لینک:',value)}}}}</script></body></html>"""
