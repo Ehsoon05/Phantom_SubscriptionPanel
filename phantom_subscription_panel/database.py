@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, String, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -21,8 +21,11 @@ class Config(Base):
     public_sub_token = Column(String, nullable=False, unique=True)
     is_sold = Column(Boolean, default=False)
     service_name = Column(String, nullable=True)
+    telegram_user_id = Column(BigInteger, nullable=True)
     profile_title = Column(String, nullable=True)
     device_limit = Column(Integer, nullable=True)
+    device_limit_warning_count = Column(Integer, nullable=False, default=0)
+    device_limit_last_warning_at = Column(DateTime, nullable=True)
     show_header = Column(Boolean, nullable=True)
     channel_handle = Column(String, nullable=True)
     show_config_preview = Column(Boolean, nullable=True)

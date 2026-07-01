@@ -31,6 +31,8 @@ class Settings:
         )
     ).expanduser()
     subscription_cache_ttl_seconds = int(os.getenv("SUBSCRIPTION_CACHE_TTL_SECONDS", "60"))
+    device_limit_warning_bot_token = os.getenv("DEVICE_LIMIT_WARNING_BOT_TOKEN", "").strip()
+    device_limit_warning_cooldown_seconds = int(os.getenv("DEVICE_LIMIT_WARNING_COOLDOWN_SECONDS", "21600"))
 
 
 settings = Settings()

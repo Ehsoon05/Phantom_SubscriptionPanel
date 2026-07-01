@@ -56,6 +56,7 @@ class ConfigSyncPayload(BaseModel):
     category_key: str = "default"
     is_sold: bool = False
     service_name: str | None = None
+    telegram_user_id: int | None = None
     device_limit: int | None = None
     show_config_preview: bool | None = None
     show_header: bool | None = None
@@ -90,6 +91,18 @@ async def startup() -> None:
             pass
         try:
             await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN show_config_preview BOOLEAN"))
+        except SQLAlchemyError:
+            pass
+        try:
+            await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN telegram_user_id INTEGER"))
+        except SQLAlchemyError:
+            pass
+        try:
+            await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN device_limit_warning_count INTEGER DEFAULT 0 NOT NULL"))
+        except SQLAlchemyError:
+            pass
+        try:
+            await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN device_limit_last_warning_at DATETIME"))
         except SQLAlchemyError:
             pass
     settings.subscription_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -363,6 +376,8 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
         config.category_key = payload.category_key
         config.is_sold = payload.is_sold
         config.service_name = payload.service_name
+        if payload.telegram_user_id is not None:
+            config.telegram_user_id = int(payload.telegram_user_id)
         config.device_limit = (
             max(0, int(payload.device_limit))
             if payload.device_limit is not None
@@ -795,6 +810,12 @@ async def _enforce_device_limit(config: Config, request: Request) -> None:
             )
         ).scalar_one()
         if int(count or 0) >= limit:
+            db_config = await session.get(Config, config.id)
+            if db_config is not None:
+                warning_text = _device_limit_warning_to_send(db_config, now)
+                await session.commit()
+                if warning_text:
+                    asyncio.create_task(_send_device_limit_warning(db_config.telegram_user_id, warning_text))
             raise HTTPException(
                 status_code=403,
                 detail=f"Device limit reached for this subscription ({limit}).",
@@ -814,6 +835,51 @@ async def _enforce_device_limit(config: Config, request: Request) -> None:
             await session.commit()
         except IntegrityError:
             await session.rollback()
+
+
+def _device_limit_warning_to_send(config: Config, now: datetime) -> str | None:
+    if not settings.device_limit_warning_bot_token:
+        return None
+    if not config.telegram_user_id:
+        return None
+    last_warning_at = _as_aware(config.device_limit_last_warning_at)
+    cooldown = max(300, int(settings.device_limit_warning_cooldown_seconds or 21600))
+    if last_warning_at and (now - last_warning_at).total_seconds() < cooldown:
+        return None
+
+    config.device_limit_warning_count = max(0, int(config.device_limit_warning_count or 0)) + 1
+    config.device_limit_last_warning_at = now
+    service_name = (config.service_name or config.profile_title or "اشتراک شما").strip()
+    return (
+        f"🔴 کاربر گرامی اتصال کانکشن شما به سرویس {service_name} بیشتر از حد مجاز می‌باشد.\n\n"
+        f"⭕️ تعداد اخطار : {config.device_limit_warning_count}\n\n"
+        "⚠️ در صورتی که تعداد تلاش‌های غیرمجاز شما بیشتر شود، سرویس شما برای 6 ساعت مسدود خواهد شد."
+    )
+
+
+def _as_aware(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+async def _send_device_limit_warning(telegram_user_id: int | None, text: str) -> None:
+    if not settings.device_limit_warning_bot_token or not telegram_user_id:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{settings.device_limit_warning_bot_token}/sendMessage",
+                json={
+                    "chat_id": int(telegram_user_id),
+                    "text": text,
+                    "disable_web_page_preview": True,
+                },
+            )
+    except (httpx.HTTPError, ValueError, TypeError):
+        return
 
 
 def _subscription_title_headers(title: str) -> dict[str, str]:
