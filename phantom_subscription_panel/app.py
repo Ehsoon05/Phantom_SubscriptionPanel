@@ -15,6 +15,8 @@ from urllib.parse import quote, unquote, urlparse
 
 import httpx
 import qrcode
+import qrcode.constants
+import qrcode.exceptions
 import qrcode.image.svg
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
@@ -468,7 +470,18 @@ async def make_qr(payload: QRPayload) -> Response:
         raise HTTPException(status_code=400, detail="QR data is empty")
     if len(data) > 8192:
         raise HTTPException(status_code=413, detail="QR data is too large")
-    image = qrcode.make(data, image_factory=qrcode.image.svg.SvgPathImage, box_size=8, border=3)
+    qr = qrcode.QRCode(
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=8,
+        border=3,
+        image_factory=qrcode.image.svg.SvgPathImage,
+    )
+    try:
+        qr.add_data(data, optimize=20)
+        qr.make(fit=True)
+    except qrcode.exceptions.DataOverflowError as exc:
+        raise HTTPException(status_code=413, detail="QR data exceeds QR capacity") from exc
+    image = qr.make_image()
     return Response(content=image.to_string(encoding="unicode"), media_type="image/svg+xml")
 
 
@@ -1025,7 +1038,7 @@ def _render_subscription_page(config: Config, upstream: dict, web_title: str = "
 <section class="glass-card"><div class="section-title">{html.escape(panel.subscription_title)}</div><div class="subscription-container"><div class="subscription-url">{html.escape(public_url)}</div><button style="background:{panel.copy_button_color}" onclick="copyText(link)">{html.escape(panel.copy_button_text)}</button><button style="background:{panel.qr_button_color}" onclick="showQR(link)">{html.escape(panel.qr_button_text)}</button></div>
 {quick_connect}{channel_button}</section>
 {preview}<div class="foot">{html.escape(panel.support_text)}</div></main><div id="toast" role="status">{html.escape(panel.copy_success_text)}</div><div id="qr-modal" onclick="this.classList.remove('open')"><div id="qrcode"></div></div>
-<script>const link={json.dumps(public_url)};let toastTimer;async function copyText(value){{try{{await navigator.clipboard.writeText(value)}}catch(error){{const area=document.createElement('textarea');area.value=value;document.body.appendChild(area);area.select();document.execCommand('copy');area.remove()}}const toast=document.getElementById('toast');toast.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.classList.remove('show'),1800)}}async function showQR(value){{const modal=document.getElementById('qr-modal');const box=document.getElementById('qrcode');box.innerHTML='';modal.classList.add('open');try{{const response=await fetch('/qr',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({{data:value}})}});if(!response.ok)throw new Error('qr');box.innerHTML=await response.text()}}catch(error){{box.innerHTML='<div class="qr-error">ساخت QR برای این کانفیگ ممکن نشد. از دکمه کپی استفاده کنید.</div>'}}}}</script></body></html>"""
+<script>const link={json.dumps(public_url)};let toastTimer;async function copyText(value){{try{{await navigator.clipboard.writeText(value)}}catch(error){{const area=document.createElement('textarea');area.value=value;document.body.appendChild(area);area.select();document.execCommand('copy');area.remove()}}const toast=document.getElementById('toast');toast.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.classList.remove('show'),1800)}}async function showQR(value){{const modal=document.getElementById('qr-modal');const box=document.getElementById('qrcode');box.innerHTML='';modal.classList.add('open');try{{const response=await fetch('/qr',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({{data:value}})}});if(!response.ok){{throw new Error(response.status===413?'too-long':'qr')}}box.innerHTML=await response.text()}}catch(error){{const message=error.message==='too-long'?'این کانفیگ برای QR بیش از حد طولانی است. از دکمه کپی استفاده کنید.':'ساخت QR برای این کانفیگ ممکن نشد. از دکمه کپی استفاده کنید.';box.innerHTML='<div class="qr-error">'+message+'</div>'}}}}</script></body></html>"""
 
 
 async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "") -> str:
