@@ -33,6 +33,7 @@ class PanelSettings:
     qr_button_text: str = "QR"
     apps_title: str = "اتصال سریع"
     apps_help_text: str = "بر روی اسم برنامه‌ای که نصب دارید بزنید تا به صورت خودکار داخل برنامه اضافه شود."
+    quick_connect_order: str = "v2rayng,hiddify,streisand,singbox,v2box,happ"
     v2rayng_button_text: str = "V2RayNG"
     hiddify_button_text: str = "Hiddify"
     streisand_button_text: str = "Streisand"

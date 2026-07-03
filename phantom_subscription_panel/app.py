@@ -48,6 +48,7 @@ FORWARDED_HEADERS = (
     "last-modified",
 )
 GENERIC_SUBSCRIPTION_TITLES = {"subscription", "sub", "subscription information"}
+QUICK_CONNECT_KEYS = ("v2rayng", "hiddify", "streisand", "singbox", "v2box", "happ")
 _cache_refresh_tasks: set[str] = set()
 _memory_cache: dict[str, dict] = {}
 _fetch_locks: dict[str, asyncio.Lock] = {}
@@ -71,6 +72,7 @@ class ConfigSyncPayload(BaseModel):
 class PanelSettingsSyncPayload(BaseModel):
     subscription_profile_title: str = ""
     subscription_device_limit: int | None = None
+    quick_connect_order: str | None = None
 
 
 class QRPayload(BaseModel):
@@ -211,6 +213,7 @@ async def admin_save_settings(
     qr_button_text: str = Form(...),
     apps_title: str = Form(...),
     apps_help_text: str = Form(...),
+    quick_connect_order: str = Form(default="v2rayng,hiddify,streisand,singbox,v2box,happ"),
     v2rayng_button_text: str = Form(...),
     hiddify_button_text: str = Form(...),
     streisand_button_text: str = Form(...),
@@ -266,6 +269,7 @@ async def admin_save_settings(
         qr_button_text=qr_button_text.strip() or "QR",
         apps_title=apps_title.strip() or "اتصال سریع",
         apps_help_text=apps_help_text.strip() or "بر روی اسم برنامه‌ای که نصب دارید بزنید تا به صورت خودکار داخل برنامه اضافه شود.",
+        quick_connect_order=_normalize_quick_connect_order(quick_connect_order),
         v2rayng_button_text=v2rayng_button_text.strip() or "V2RayNG",
         hiddify_button_text=hiddify_button_text.strip() or "Hiddify",
         streisand_button_text=streisand_button_text.strip() or "Streisand",
@@ -418,6 +422,8 @@ async def sync_panel_settings(payload: PanelSettingsSyncPayload, authorization: 
     panel.subscription_profile_title = payload.subscription_profile_title.strip()
     if payload.subscription_device_limit is not None:
         panel.subscription_device_limit = max(0, int(payload.subscription_device_limit or 0))
+    if payload.quick_connect_order is not None:
+        panel.quick_connect_order = _normalize_quick_connect_order(payload.quick_connect_order)
     save_panel_settings(panel)
     return "ok"
 
@@ -717,6 +723,60 @@ def _normalize_color(value: str, fallback: str) -> str:
     if re.fullmatch(r"#[0-9a-fA-F]{6}", value):
         return value.lower()
     return fallback
+
+
+def _normalize_quick_connect_order(value: str) -> str:
+    requested = [part.strip().lower() for part in (value or "").split(",")]
+    ordered = []
+    for key in requested:
+        if key in QUICK_CONNECT_KEYS and key not in ordered:
+            ordered.append(key)
+    ordered.extend(key for key in QUICK_CONNECT_KEYS if key not in ordered)
+    return ",".join(ordered)
+
+
+def _quick_connect_button_html(
+    panel: PanelSettings,
+    key: str,
+    public_url: str,
+    encoded_url: str,
+    encoded_title: str,
+    token: str,
+) -> str:
+    specs = {
+        "v2rayng": (
+            panel.v2rayng_button_text,
+            panel.v2rayng_button_color,
+            f"v2rayng://install-sub?url={encoded_url}#{encoded_title}",
+        ),
+        "hiddify": (
+            panel.hiddify_button_text,
+            panel.hiddify_button_color,
+            f"hiddify://import/?url={encoded_url}&name={encoded_title}",
+        ),
+        "streisand": (
+            panel.streisand_button_text,
+            panel.streisand_button_color,
+            f"streisand://import/{public_url}#{encoded_title}",
+        ),
+        "singbox": (
+            panel.singbox_button_text,
+            panel.singbox_button_color,
+            f"sing-box://import-remote-profile?url={encoded_url}#{encoded_title}",
+        ),
+        "v2box": (
+            panel.v2box_button_text,
+            panel.v2box_button_color,
+            f"v2box://install-sub?url={encoded_url}&name={encoded_title}",
+        ),
+        "happ": (
+            panel.happ_button_text,
+            panel.happ_button_color,
+            f"/connect/happ/{quote(token, safe='')}",
+        ),
+    }
+    text_value, color, url = specs[key]
+    return f"<a class='link-btn' style='background:{color}' href='{html.escape(url, quote=True)}'>{html.escape(text_value)}</a>"
 
 
 def _positive_int(value: str | int | None) -> int:
@@ -1036,15 +1096,14 @@ def _render_subscription_page(config: Config, upstream: dict, web_title: str = "
     if panel.show_quick_connect:
         encoded_url = quote(public_url, safe="")
         encoded_title = quote(app_title, safe="")
+        buttons = "".join(
+            _quick_connect_button_html(panel, key, public_url, encoded_url, encoded_title, config.public_sub_token)
+            for key in _normalize_quick_connect_order(panel.quick_connect_order).split(",")
+        )
         quick_connect = (
             f"<div class='section-title spaced'>{html.escape(panel.apps_title)}</div>"
             f"<p class='apps-help'>{html.escape(panel.apps_help_text)}</p><div class='btn-grid'>"
-            f"<a class='link-btn' style='background:{panel.v2rayng_button_color}' href='v2rayng://install-sub?url={encoded_url}#{encoded_title}'>{html.escape(panel.v2rayng_button_text)}</a>"
-            f"<a class='link-btn' style='background:{panel.hiddify_button_color}' href='hiddify://import/?url={encoded_url}&name={encoded_title}'>{html.escape(panel.hiddify_button_text)}</a>"
-            f"<a class='link-btn' style='background:{panel.streisand_button_color}' href='streisand://import/{public_url}#{encoded_title}'>{html.escape(panel.streisand_button_text)}</a>"
-            f"<a class='link-btn' style='background:{panel.singbox_button_color}' href='sing-box://import-remote-profile?url={encoded_url}#{encoded_title}'>{html.escape(panel.singbox_button_text)}</a>"
-            f"<a class='link-btn' style='background:{panel.v2box_button_color}' href='v2box://install-sub?url={encoded_url}&name={encoded_title}'>{html.escape(panel.v2box_button_text)}</a>"
-            f"<a class='link-btn' style='background:{panel.happ_button_color}' href='/connect/happ/{quote(config.public_sub_token, safe='')}'>{html.escape(panel.happ_button_text)}</a></div>"
+            f"{buttons}</div>"
         )
     channel_button = (
         f"<a class='link-btn channel-btn' style='background:{panel.channel_button_color}' href='{html.escape(channel_url)}'>{html.escape(panel.channel_button_text)}</a>"
@@ -1122,6 +1181,7 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
 <label>پیام موفقیت کپی<input name="copy_success_text" value="{html.escape(panel.copy_success_text)}"></label><label>متن دکمه QR لینک<input name="qr_button_text" value="{html.escape(panel.qr_button_text)}"></label>
 <label>رنگ دکمه کپی لینک<input name="copy_button_color" type="color" value="{panel.copy_button_color}"></label><label>رنگ دکمه QR لینک<input name="qr_button_color" type="color" value="{panel.qr_button_color}"></label>
 <label>عنوان اتصال سریع<input name="apps_title" value="{html.escape(panel.apps_title)}"></label><label class="wide">متن راهنمای اتصال سریع<input name="apps_help_text" value="{html.escape(panel.apps_help_text)}"></label>
+<label class="wide">ترتیب دکمه‌های اتصال سریع<input name="quick_connect_order" dir="ltr" value="{html.escape(_normalize_quick_connect_order(panel.quick_connect_order))}"><span>کلیدها را با کاما جدا کنید: v2rayng, hiddify, streisand, singbox, v2box, happ</span></label>
 <label>متن V2RayNG<input name="v2rayng_button_text" value="{html.escape(panel.v2rayng_button_text)}"></label><label>متن Hiddify<input name="hiddify_button_text" value="{html.escape(panel.hiddify_button_text)}"></label>
 <label>متن Streisand<input name="streisand_button_text" value="{html.escape(panel.streisand_button_text)}"></label><label>متن Sing-box<input name="singbox_button_text" value="{html.escape(panel.singbox_button_text)}"></label>
 <label>متن V2Box<input name="v2box_button_text" value="{html.escape(panel.v2box_button_text)}"></label><label>متن HAPP<input name="happ_button_text" value="{html.escape(panel.happ_button_text)}"></label>
