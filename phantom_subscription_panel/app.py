@@ -603,6 +603,19 @@ async def _fetch_upstream_web_title(url: str) -> str:
 
 def _clean_web_title(value: str) -> str:
     title = value.strip()
+    generic_suffixes = (
+        "Sub Info",
+        "Subscription Information",
+        "Subscription",
+    )
+    separators = (" - ", " | ", " — ", " – ")
+    for generic in generic_suffixes:
+        if title.casefold() == generic.casefold():
+            return ""
+        for separator in separators:
+            suffix = f"{separator}{generic}"
+            if title.casefold().endswith(suffix.casefold()):
+                return title[: -len(suffix)].strip()
     for suffix in (" - Sub Info", " | Sub Info", " — Sub Info"):
         if title.endswith(suffix):
             return title[: -len(suffix)].strip()
