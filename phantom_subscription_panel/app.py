@@ -47,6 +47,7 @@ FORWARDED_HEADERS = (
     "etag",
     "last-modified",
 )
+GENERIC_SUBSCRIPTION_TITLES = {"subscription", "sub", "subscription information"}
 _cache_refresh_tasks: set[str] = set()
 _memory_cache: dict[str, dict] = {}
 _fetch_locks: dict[str, asyncio.Lock] = {}
@@ -778,24 +779,41 @@ def _content_disposition_title(value: str) -> str:
 def _upstream_title(headers: httpx.Headers) -> str:
     profile_title = _decode_profile_title(headers.get("profile-title", ""))
     disposition_title = _content_disposition_title(headers.get("content-disposition", ""))
-    if profile_title and profile_title.casefold() not in {"subscription", "sub"}:
-        return profile_title
-    return disposition_title or profile_title or "Subscription"
+    if _usable_subscription_title(profile_title):
+        return profile_title.strip()
+    return _usable_subscription_title(disposition_title) or "Subscription"
+
+
+def _usable_subscription_title(value: str | None) -> str:
+    title = (value or "").strip()
+    if not title:
+        return ""
+    if title.casefold() in GENERIC_SUBSCRIPTION_TITLES:
+        return ""
+    return title
 
 
 def _app_title_for_subscription(config: Config, upstream: dict) -> str:
     panel = load_panel_settings()
     return (
-        config.profile_title
-        or panel.subscription_profile_title
-        or config.service_name
-        or upstream["title"]
-        or "Subscription"
+        _usable_subscription_title(config.profile_title)
+        or _usable_subscription_title(panel.subscription_profile_title)
+        or _usable_subscription_title(config.service_name)
+        or _usable_subscription_title(upstream["title"])
+        or panel.brand_name
+        or "Phantom Hubs"
     ).strip()
 
 
 def _web_title_for_subscription(config: Config, upstream: dict) -> str:
-    return (upstream["title"] or config.service_name or "Subscription").strip()
+    panel = load_panel_settings()
+    return (
+        _usable_subscription_title(upstream["title"])
+        or _usable_subscription_title(config.service_name)
+        or _usable_subscription_title(config.profile_title)
+        or panel.brand_name
+        or "Phantom Hubs"
+    ).strip()
 
 
 def _device_limit_for_subscription(config: Config) -> int:
