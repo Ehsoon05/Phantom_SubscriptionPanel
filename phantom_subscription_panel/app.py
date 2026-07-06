@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .config import settings
@@ -73,6 +73,10 @@ class PanelSettingsSyncPayload(BaseModel):
     subscription_profile_title: str = ""
     subscription_device_limit: int | None = None
     quick_connect_order: str | None = None
+
+
+class TokenRevokePayload(BaseModel):
+    new_token: str | None = None
 
 
 class QRPayload(BaseModel):
@@ -346,6 +350,7 @@ async def admin_delete_subscription(config_id: int, _: str = Depends(_require_ad
     async with async_session() as session:
         config = await session.get(Config, config_id)
         if config:
+            await _reset_devices_for_token(session, config.public_sub_token)
             await session.delete(config)
             await session.commit()
     return RedirectResponse("/admin", status_code=303)
@@ -361,6 +366,32 @@ async def admin_update_subscription_device_limit(
         config = await session.get(Config, config_id)
         if config:
             config.device_limit = _positive_int(device_limit)
+            await session.commit()
+    return RedirectResponse("/admin", status_code=303)
+
+
+@app.post("/admin/subscriptions/{config_id}/devices/reset")
+async def admin_reset_subscription_devices(config_id: int, _: str = Depends(_require_admin)) -> RedirectResponse:
+    async with async_session() as session:
+        config = await session.get(Config, config_id)
+        if config:
+            await _reset_devices_for_token(session, config.public_sub_token)
+            config.device_limit_warning_count = 0
+            config.device_limit_last_warning_at = None
+            await session.commit()
+    return RedirectResponse("/admin", status_code=303)
+
+
+@app.post("/admin/subscriptions/{config_id}/revoke")
+async def admin_revoke_subscription(config_id: int, _: str = Depends(_require_admin)) -> RedirectResponse:
+    async with async_session() as session:
+        config = await session.get(Config, config_id)
+        if config:
+            old_token = config.public_sub_token
+            config.public_sub_token = await _unique_token(session)
+            await _reset_devices_for_token(session, old_token)
+            config.device_limit_warning_count = 0
+            config.device_limit_last_warning_at = None
             await session.commit()
     return RedirectResponse("/admin", status_code=303)
 
@@ -413,6 +444,48 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
         await session.commit()
     _schedule_cache_refresh(payload.upstream_url)
     return "ok"
+
+
+@app.post("/internal/configs/{token}/devices/reset", response_class=PlainTextResponse)
+async def reset_config_devices(token: str, authorization: str | None = Header(default=None)) -> str:
+    _require_sync_token(authorization)
+    async with async_session() as session:
+        config = await _config_for_token_in_session(session, token)
+        if not config:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        await _reset_devices_for_token(session, config.public_sub_token)
+        config.device_limit_warning_count = 0
+        config.device_limit_last_warning_at = None
+        await session.commit()
+    return "ok"
+
+
+@app.post("/internal/configs/{token}/revoke", response_class=JSONResponse)
+async def revoke_config_token(
+    token: str,
+    payload: TokenRevokePayload,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    _require_sync_token(authorization)
+    async with async_session() as session:
+        config = await _config_for_token_in_session(session, token)
+        if not config:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        new_token = _clean_token(payload.new_token or "") or await _unique_token(session)
+        duplicate = await _config_for_token_in_session(session, new_token)
+        if duplicate is not None and duplicate.id != config.id:
+            raise HTTPException(status_code=409, detail="New token already exists")
+        old_token = config.public_sub_token
+        config.public_sub_token = new_token
+        await _reset_devices_for_token(session, old_token)
+        await _reset_devices_for_token(session, new_token)
+        config.device_limit_warning_count = 0
+        config.device_limit_last_warning_at = None
+        await session.commit()
+    return {
+        "token": new_token,
+        "public_url": f"{settings.public_base_url}/token/{quote(new_token, safe='')}",
+    }
 
 
 @app.post("/internal/settings", response_class=PlainTextResponse)
@@ -502,8 +575,26 @@ def _require_sync_token(authorization: str | None) -> None:
 
 async def _config_for_token(token: str) -> Config | None:
     async with async_session() as session:
-        result = await session.execute(select(Config).where(Config.public_sub_token == token))
-        return result.scalar_one_or_none()
+        return await _config_for_token_in_session(session, token)
+
+
+async def _config_for_token_in_session(session, token: str) -> Config | None:
+    result = await session.execute(select(Config).where(Config.public_sub_token == token))
+    return result.scalar_one_or_none()
+
+
+async def _reset_devices_for_token(session, token: str) -> int:
+    result = await session.execute(
+        delete(SubscriptionDevice).where(SubscriptionDevice.public_sub_token == token)
+    )
+    return int(result.rowcount or 0)
+
+
+async def _unique_token(session) -> str:
+    while True:
+        token = secrets.token_urlsafe(24)
+        if await _config_for_token_in_session(session, token) is None:
+            return token
 
 
 async def _fetch_upstream(url: str) -> dict:
@@ -1135,12 +1226,18 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
     async with async_session() as session:
         result = await session.execute(select(Config).order_by(Config.id.desc()))
         configs = list(result.scalars().all())
+        count_result = await session.execute(
+            select(SubscriptionDevice.public_sub_token, func.count(SubscriptionDevice.id))
+            .group_by(SubscriptionDevice.public_sub_token)
+        )
+        device_counts = {str(token): int(count or 0) for token, count in count_result.all()}
 
     def row(config: Config) -> str:
         public_url = f"{settings.public_base_url}/token/{quote(config.public_sub_token, safe='')}"
         header_checked = "checked" if _config_bool(config.show_header, True) else ""
         preview_checked = "checked" if _config_bool(config.show_config_preview, panel.show_config_preview) else ""
         channel_value = html.escape(config.channel_handle or "")
+        device_count = device_counts.get(config.public_sub_token, 0)
         search_text = " ".join(
             [
                 config.service_name or "",
@@ -1151,7 +1248,7 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
             ]
         )
         volume_text = "نامحدود" if not config.volume_gb else f"{config.volume_gb} GB"
-        return f"""<article class="sub-card" data-search="{html.escape(search_text.casefold(), quote=True)}"><div class="sub-card-head"><div><strong>{html.escape(config.service_name or "-")}</strong><span>{html.escape(config.profile_title or "نام اختصاصی ندارد")}</span></div><b>{html.escape(volume_text)}</b></div><div class="link-panel"><div><span>لینک ساخته‌شده</span><a class="ltr break" href="{public_url}" target="_blank">{html.escape(public_url)}</a></div><button type="button" class="copy-admin" onclick="copyAdminLink({html.escape(json.dumps(public_url), quote=True)})">کپی لینک</button></div><div class="sub-grid"><form class="inline-form" method="post" action="/admin/subscriptions/{config.id}/device-limit"><label>محدودیت کاربر/دستگاه<input name="device_limit" type="number" min="0" value="{config.device_limit if config.device_limit is not None else 0}" title="0 یعنی نامحدود"></label><button>ثبت</button></form><form class="stack-form" method="post" action="/admin/subscriptions/{config.id}/display"><div class="toggle-row"><label class="tiny-toggle"><input name="show_header" type="checkbox" {header_checked}> هدر</label><label class="tiny-toggle"><input name="show_config_preview" type="checkbox" {preview_checked}> کانفیگ‌ها</label></div><label>کانال اختصاصی<input name="channel_handle" value="{channel_value}" placeholder="@SupportChannel"></label><button>ذخیره نمایش</button></form></div><details><summary>لینک اصلی</summary><p class="ltr break">{html.escape(config.sub_link)}</p></details><form class="delete-form" method="post" action="/admin/subscriptions/{config.id}/delete"><button class="danger">حذف</button></form></article>"""
+        return f"""<article class="sub-card" data-search="{html.escape(search_text.casefold(), quote=True)}"><div class="sub-card-head"><div><strong>{html.escape(config.service_name or "-")}</strong><span>{html.escape(config.profile_title or "نام اختصاصی ندارد")}</span></div><b>{html.escape(volume_text)}</b></div><div class="link-panel"><div><span>لینک ساخته‌شده</span><a class="ltr break" href="{public_url}" target="_blank">{html.escape(public_url)}</a></div><button type="button" class="copy-admin" onclick="copyAdminLink({html.escape(json.dumps(public_url), quote=True)})">کپی لینک</button></div><div class="sub-grid"><form class="inline-form" method="post" action="/admin/subscriptions/{config.id}/device-limit"><label>محدودیت کاربر/دستگاه<input name="device_limit" type="number" min="0" value="{config.device_limit if config.device_limit is not None else 0}" title="0 یعنی نامحدود"></label><button>ثبت</button></form><form class="stack-form" method="post" action="/admin/subscriptions/{config.id}/display"><div class="toggle-row"><label class="tiny-toggle"><input name="show_header" type="checkbox" {header_checked}> هدر</label><label class="tiny-toggle"><input name="show_config_preview" type="checkbox" {preview_checked}> کانفیگ‌ها</label></div><label>کانال اختصاصی<input name="channel_handle" value="{channel_value}" placeholder="@SupportChannel"></label><button>ذخیره نمایش</button></form></div><div class="device-panel"><span>دستگاه‌های ثبت‌شده: <b>{device_count}</b></span><form method="post" action="/admin/subscriptions/{config.id}/devices/reset"><button type="submit">ریست شمارش</button></form><form method="post" action="/admin/subscriptions/{config.id}/revoke" onsubmit="return confirm('لینک قبلی باطل و لینک جدید ساخته شود؟')"><button type="submit" class="danger">Revoke لینک</button></form></div><details><summary>لینک اصلی</summary><p class="ltr break">{html.escape(config.sub_link)}</p></details><form class="delete-form" method="post" action="/admin/subscriptions/{config.id}/delete"><button class="danger">حذف</button></form></article>"""
 
     rows = "".join(row(config) for config in configs) or "<div class='empty-admin'>هنوز لینکی ثبت نشده است.</div>"
     flash = f"<div class='notice'>{html.escape(notice)}</div>" if notice else f"<div class='error'>{html.escape(error)}</div>" if error else ""
