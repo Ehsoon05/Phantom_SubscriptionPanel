@@ -994,32 +994,51 @@ def _client_ip_hint(request: Request) -> str:
     return request.client.host if request.client else ""
 
 
-def _device_fingerprint(request: Request) -> tuple[str, str, str]:
+def _normalized_device_user_agent(user_agent: str) -> str:
+    value = user_agent.strip().lower()
+    value = re.sub(r"\b\d+(?:\.\d+){1,4}\b", "{version}", value)
+    value = re.sub(r"\s+", " ", value)
+    return value[:300]
+
+
+def _device_fingerprints(request: Request) -> tuple[str, str, str, str]:
     user_agent = request.headers.get("user-agent", "").strip()[:300]
     accept_language = request.headers.get("accept-language", "").strip()[:120]
     ip_hint = _client_ip_hint(request)[:120]
-    seed = "\n".join([user_agent, accept_language, ip_hint])
-    return hashlib.sha256(seed.encode("utf-8")).hexdigest(), user_agent, ip_hint
+    stable_seed = "\n".join([_normalized_device_user_agent(user_agent), accept_language])
+    legacy_seed = "\n".join([user_agent, accept_language, ip_hint])
+    return (
+        hashlib.sha256(stable_seed.encode("utf-8")).hexdigest(),
+        hashlib.sha256(legacy_seed.encode("utf-8")).hexdigest(),
+        user_agent,
+        ip_hint,
+    )
 
 
 async def _enforce_device_limit(config: Config, request: Request) -> None:
     limit = _device_limit_for_subscription(config)
     if limit <= 0:
         return
-    fingerprint, user_agent, ip_hint = _device_fingerprint(request)
+    fingerprint, legacy_fingerprint, user_agent, ip_hint = _device_fingerprints(request)
     now = datetime.now(timezone.utc)
     async with async_session() as session:
         existing = (
             await session.execute(
                 select(SubscriptionDevice).where(
                     SubscriptionDevice.public_sub_token == config.public_sub_token,
-                    SubscriptionDevice.fingerprint == fingerprint,
+                    SubscriptionDevice.fingerprint.in_({fingerprint, legacy_fingerprint}),
                 )
             )
         ).scalar_one_or_none()
         if existing is not None:
+            existing.fingerprint = fingerprint
+            existing.user_agent = user_agent
+            existing.ip_hint = ip_hint
             existing.last_seen_at = now
-            await session.commit()
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
             return
 
         count = (
