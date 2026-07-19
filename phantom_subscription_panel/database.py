@@ -21,6 +21,7 @@ class Config(Base):
     public_sub_token = Column(String, nullable=False, unique=True)
     is_sold = Column(Boolean, default=False)
     service_name = Column(String, nullable=True)
+    panel_username = Column(String, nullable=True)
     telegram_user_id = Column(BigInteger, nullable=True)
     profile_title = Column(String, nullable=True)
     device_limit = Column(Integer, nullable=True)

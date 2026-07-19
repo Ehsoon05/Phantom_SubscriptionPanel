@@ -62,6 +62,7 @@ class ConfigSyncPayload(BaseModel):
     category_key: str = "default"
     is_sold: bool = False
     service_name: str | None = None
+    panel_username: str | None = None
     telegram_user_id: int | None = None
     device_limit: int | None = None
     show_config_preview: bool | None = None
@@ -111,6 +112,10 @@ async def startup() -> None:
             pass
         try:
             await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN info_proxies_enabled BOOLEAN"))
+        except SQLAlchemyError:
+            pass
+        try:
+            await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN panel_username VARCHAR"))
         except SQLAlchemyError:
             pass
         try:
@@ -342,6 +347,7 @@ async def admin_create_subscription(
         config.volume_gb = max(volume_gb, 0)
         config.category_key = category_key.strip() or "manual"
         config.service_name = service_name.strip() or None
+        config.panel_username = service_name.strip() or None
         config.profile_title = profile_title.strip() or None
         config.device_limit = _positive_int(device_limit)
         config.show_header = show_header == "on"
@@ -438,6 +444,8 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
         config.category_key = payload.category_key
         config.is_sold = payload.is_sold
         config.service_name = payload.service_name
+        if payload.panel_username is not None:
+            config.panel_username = payload.panel_username.strip() or None
         if payload.telegram_user_id is not None:
             config.telegram_user_id = int(payload.telegram_user_id)
         config.device_limit = (
@@ -958,7 +966,7 @@ def _info_proxy_lines(config: Config, upstream: dict) -> list[str]:
     remaining_bytes = max(total - used, 0) if total > 0 else 0
     remaining_label = "نامحدود" if total <= 0 else _format_gb_compact(remaining_bytes)
     days_label = _remaining_days_label(usage.get("expire"))
-    title = _app_title_for_subscription(config, upstream)
+    title = _info_title_for_subscription(config, upstream)
     return [
         _vless_info_proxy("00000000-0000-4000-8000-000000000001", f"👤 {title}"),
         _vless_info_proxy("00000000-0000-4000-8000-000000000002", f"⏳ روزهای باقی مانده {days_label}"),
@@ -1049,6 +1057,14 @@ def _app_title_for_subscription(config: Config, upstream: dict) -> str:
         or _usable_subscription_title(upstream["title"])
         or panel.brand_name
         or "Phantom Hubs"
+    ).strip()
+
+
+def _info_title_for_subscription(config: Config, upstream: dict) -> str:
+    return (
+        _usable_subscription_title(config.panel_username)
+        or _usable_subscription_title(config.service_name)
+        or _app_title_for_subscription(config, upstream)
     ).strip()
 
 
