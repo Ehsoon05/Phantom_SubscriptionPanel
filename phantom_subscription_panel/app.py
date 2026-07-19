@@ -168,8 +168,9 @@ async def subscription(token: str, request: Request) -> Response:
     response_headers = {"Cache-Control": "no-store, no-cache, must-revalidate", "X-Content-Type-Options": "nosniff"}
     response_headers.update(upstream["forward_headers"])
     response_headers.update(_subscription_title_headers(_app_title_for_subscription(config, upstream)))
+    body = _subscription_body_with_info_proxies(config, upstream)
     return Response(
-        content=upstream["body"],
+        content=body,
         media_type=upstream["content_type"] or "text/plain; charset=utf-8",
         headers=response_headers,
     )
@@ -905,6 +906,73 @@ def _subscription_lines(body: bytes) -> list[str]:
     if _looks_like_html(decoded.encode()):
         return []
     return [line.strip() for line in decoded.splitlines() if line.strip() and any(line.lower().startswith(s) for s in CONFIG_SCHEMES)]
+
+
+def _decode_subscription_text(body: bytes) -> tuple[str, bool]:
+    text = body.decode("utf-8", errors="replace").strip()
+    if text and any(scheme in text.lower() for scheme in CONFIG_SCHEMES):
+        return text, False
+    compact = re.sub(r"\s+", "", text)
+    if not compact:
+        return text, False
+    try:
+        raw = base64.b64decode(compact + "=" * (-len(compact) % 4), validate=False)
+        candidate = raw.decode("utf-8").strip()
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        return text, False
+    if any(scheme in candidate.lower() for scheme in CONFIG_SCHEMES):
+        return candidate, True
+    return text, False
+
+
+def _subscription_body_with_info_proxies(config: Config, upstream: dict) -> bytes:
+    text, was_base64 = _decode_subscription_text(upstream["body"])
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    info_lines = _info_proxy_lines(config, upstream)
+    if not info_lines:
+        return upstream["body"]
+    # Put status entries first so apps show them at the top of the profile.
+    content = "\n".join([*info_lines, *lines]).strip() + "\n"
+    if was_base64:
+        return base64.b64encode(content.encode("utf-8"))
+    return content.encode("utf-8")
+
+
+def _info_proxy_lines(config: Config, upstream: dict) -> list[str]:
+    usage = upstream.get("usage") or {}
+    used = int(usage.get("upload", 0) or 0) + int(usage.get("download", 0) or 0)
+    total = int(usage.get("total", 0) or 0) or max(int(config.volume_gb or 0), 0) * 1024**3
+    remaining_bytes = max(total - used, 0) if total > 0 else 0
+    remaining_label = "نامحدود" if total <= 0 else _format_gb_compact(remaining_bytes)
+    days_label = _remaining_days_label(usage.get("expire"))
+    return [
+        _vless_info_proxy("00000000-0000-4000-8000-000000000001", f"⏳ روزهای باقی مانده {days_label}"),
+        _vless_info_proxy("00000000-0000-4000-8000-000000000002", f"📊 حجم باقی مانده {remaining_label}"),
+    ]
+
+
+def _vless_info_proxy(uuid: str, label: str) -> str:
+    return f"vless://{uuid}@info.phantomhubs.local:443?type=tcp&security=none#{quote(label, safe='')}"
+
+
+def _format_gb_compact(value: int) -> str:
+    gb = max(value, 0) / 1024**3
+    if gb >= 100:
+        formatted = f"{gb:.0f}"
+    elif gb >= 10:
+        formatted = f"{gb:.1f}"
+    else:
+        formatted = f"{gb:.2f}"
+    formatted = formatted.rstrip("0").rstrip(".")
+    return f"{formatted} GB"
+
+
+def _remaining_days_label(expire: int | None) -> str:
+    if not expire:
+        return "نامحدود"
+    remaining_seconds = max(int(expire) - int(time.time()), 0)
+    days = remaining_seconds // 86400
+    return f"{days} day"
 
 
 def _parse_subscription_userinfo(value: str) -> dict[str, int]:
