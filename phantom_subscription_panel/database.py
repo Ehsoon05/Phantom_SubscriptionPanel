@@ -29,6 +29,7 @@ class Config(Base):
     show_header = Column(Boolean, nullable=True)
     channel_handle = Column(String, nullable=True)
     show_config_preview = Column(Boolean, nullable=True)
+    info_proxies_enabled = Column(Boolean, nullable=True)
 
 
 class SubscriptionDevice(Base):

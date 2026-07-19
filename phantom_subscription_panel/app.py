@@ -65,6 +65,7 @@ class ConfigSyncPayload(BaseModel):
     telegram_user_id: int | None = None
     device_limit: int | None = None
     show_config_preview: bool | None = None
+    info_proxies_enabled: bool | None = None
     show_header: bool | None = None
     channel_handle: str | None = None
 
@@ -106,6 +107,10 @@ async def startup() -> None:
             pass
         try:
             await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN show_config_preview BOOLEAN"))
+        except SQLAlchemyError:
+            pass
+        try:
+            await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN info_proxies_enabled BOOLEAN"))
         except SQLAlchemyError:
             pass
         try:
@@ -317,6 +322,7 @@ async def admin_create_subscription(
     show_header: str | None = Form(default=None),
     channel_handle: str = Form(default=""),
     show_config_preview: str | None = Form(default=None),
+    info_proxies_enabled: str | None = Form(default=None),
     volume_gb: int = Form(default=0),
     category_key: str = Form(default="manual"),
     _: str = Depends(_require_admin),
@@ -341,6 +347,7 @@ async def admin_create_subscription(
         config.show_header = show_header == "on"
         config.channel_handle = channel_handle.strip() or None
         config.show_config_preview = show_config_preview == "on"
+        config.info_proxies_enabled = info_proxies_enabled == "on"
         await session.commit()
     public_url = f"{settings.public_base_url}/token/{quote(token, safe='')}"
     return await _render_admin(load_panel_settings(), notice=f"لینک اختصاصی ساخته شد: {public_url}")
@@ -403,6 +410,7 @@ async def admin_update_subscription_display(
     show_header: str | None = Form(default=None),
     channel_handle: str = Form(default=""),
     show_config_preview: str | None = Form(default=None),
+    info_proxies_enabled: str | None = Form(default=None),
     _: str = Depends(_require_admin),
 ) -> RedirectResponse:
     async with async_session() as session:
@@ -411,6 +419,7 @@ async def admin_update_subscription_display(
             config.show_header = show_header == "on"
             config.channel_handle = channel_handle.strip() or None
             config.show_config_preview = show_config_preview == "on"
+            config.info_proxies_enabled = info_proxies_enabled == "on"
             await session.commit()
     return RedirectResponse("/admin", status_code=303)
 
@@ -438,6 +447,8 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
         )
         if payload.show_config_preview is not None:
             config.show_config_preview = bool(payload.show_config_preview)
+        if payload.info_proxies_enabled is not None:
+            config.info_proxies_enabled = bool(payload.info_proxies_enabled)
         if payload.show_header is not None:
             config.show_header = bool(payload.show_header)
         if payload.channel_handle is not None:
@@ -926,6 +937,8 @@ def _decode_subscription_text(body: bytes) -> tuple[str, bool]:
 
 
 def _subscription_body_with_info_proxies(config: Config, upstream: dict) -> bytes:
+    if not bool(config.info_proxies_enabled):
+        return upstream["body"]
     text, was_base64 = _decode_subscription_text(upstream["body"])
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     info_lines = _info_proxy_lines(config, upstream)
@@ -945,9 +958,11 @@ def _info_proxy_lines(config: Config, upstream: dict) -> list[str]:
     remaining_bytes = max(total - used, 0) if total > 0 else 0
     remaining_label = "نامحدود" if total <= 0 else _format_gb_compact(remaining_bytes)
     days_label = _remaining_days_label(usage.get("expire"))
+    title = _app_title_for_subscription(config, upstream)
     return [
-        _vless_info_proxy("00000000-0000-4000-8000-000000000001", f"⏳ روزهای باقی مانده {days_label}"),
-        _vless_info_proxy("00000000-0000-4000-8000-000000000002", f"📊 حجم باقی مانده {remaining_label}"),
+        _vless_info_proxy("00000000-0000-4000-8000-000000000001", f"👤 {title}"),
+        _vless_info_proxy("00000000-0000-4000-8000-000000000002", f"⏳ روزهای باقی مانده {days_label}"),
+        _vless_info_proxy("00000000-0000-4000-8000-000000000003", f"📊 حجم باقی مانده {remaining_label}"),
     ]
 
 
@@ -1323,6 +1338,7 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
         public_url = f"{settings.public_base_url}/token/{quote(config.public_sub_token, safe='')}"
         header_checked = "checked" if _config_bool(config.show_header, True) else ""
         preview_checked = "checked" if _config_bool(config.show_config_preview, panel.show_config_preview) else ""
+        info_checked = "checked" if bool(config.info_proxies_enabled) else ""
         channel_value = html.escape(config.channel_handle or "")
         device_count = device_counts.get(config.public_sub_token, 0)
         search_text = " ".join(
@@ -1335,7 +1351,7 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
             ]
         )
         volume_text = "نامحدود" if not config.volume_gb else f"{config.volume_gb} GB"
-        return f"""<article class="sub-card" data-search="{html.escape(search_text.casefold(), quote=True)}"><div class="sub-card-head"><div><strong>{html.escape(config.service_name or "-")}</strong><span>{html.escape(config.profile_title or "نام اختصاصی ندارد")}</span></div><b>{html.escape(volume_text)}</b></div><div class="link-panel"><div><span>لینک ساخته‌شده</span><a class="ltr break" href="{public_url}" target="_blank">{html.escape(public_url)}</a></div><button type="button" class="copy-admin" onclick="copyAdminLink({html.escape(json.dumps(public_url), quote=True)})">کپی لینک</button></div><div class="sub-grid"><form class="inline-form" method="post" action="/admin/subscriptions/{config.id}/device-limit"><label>محدودیت کاربر/دستگاه<input name="device_limit" type="number" min="0" value="{config.device_limit if config.device_limit is not None else 0}" title="0 یعنی نامحدود"></label><button>ثبت</button></form><form class="stack-form" method="post" action="/admin/subscriptions/{config.id}/display"><div class="toggle-row"><label class="tiny-toggle"><input name="show_header" type="checkbox" {header_checked}> هدر</label><label class="tiny-toggle"><input name="show_config_preview" type="checkbox" {preview_checked}> کانفیگ‌ها</label></div><label>کانال اختصاصی<input name="channel_handle" value="{channel_value}" placeholder="@SupportChannel"></label><button>ذخیره نمایش</button></form></div><div class="device-panel"><span>دستگاه‌های ثبت‌شده: <b>{device_count}</b></span><form method="post" action="/admin/subscriptions/{config.id}/devices/reset"><button type="submit">ریست شمارش</button></form><form method="post" action="/admin/subscriptions/{config.id}/revoke" onsubmit="return confirm('لینک قبلی باطل و لینک جدید ساخته شود؟')"><button type="submit" class="danger">Revoke لینک</button></form></div><details><summary>لینک اصلی</summary><p class="ltr break">{html.escape(config.sub_link)}</p></details><form class="delete-form" method="post" action="/admin/subscriptions/{config.id}/delete"><button class="danger">حذف</button></form></article>"""
+        return f"""<article class="sub-card" data-search="{html.escape(search_text.casefold(), quote=True)}"><div class="sub-card-head"><div><strong>{html.escape(config.service_name or "-")}</strong><span>{html.escape(config.profile_title or "نام اختصاصی ندارد")}</span></div><b>{html.escape(volume_text)}</b></div><div class="link-panel"><div><span>لینک ساخته‌شده</span><a class="ltr break" href="{public_url}" target="_blank">{html.escape(public_url)}</a></div><button type="button" class="copy-admin" onclick="copyAdminLink({html.escape(json.dumps(public_url), quote=True)})">کپی لینک</button></div><div class="sub-grid"><form class="inline-form" method="post" action="/admin/subscriptions/{config.id}/device-limit"><label>محدودیت کاربر/دستگاه<input name="device_limit" type="number" min="0" value="{config.device_limit if config.device_limit is not None else 0}" title="0 یعنی نامحدود"></label><button>ثبت</button></form><form class="stack-form" method="post" action="/admin/subscriptions/{config.id}/display"><div class="toggle-row"><label class="tiny-toggle"><input name="show_header" type="checkbox" {header_checked}> هدر</label><label class="tiny-toggle"><input name="show_config_preview" type="checkbox" {preview_checked}> کانفیگ‌ها</label><label class="tiny-toggle"><input name="info_proxies_enabled" type="checkbox" {info_checked}> کانفیگ‌های اطلاعاتی</label></div><label>کانال اختصاصی<input name="channel_handle" value="{channel_value}" placeholder="@SupportChannel"></label><button>ذخیره نمایش</button></form></div><div class="device-panel"><span>دستگاه‌های ثبت‌شده: <b>{device_count}</b></span><form method="post" action="/admin/subscriptions/{config.id}/devices/reset"><button type="submit">ریست شمارش</button></form><form method="post" action="/admin/subscriptions/{config.id}/revoke" onsubmit="return confirm('لینک قبلی باطل و لینک جدید ساخته شود؟')"><button type="submit" class="danger">Revoke لینک</button></form></div><details><summary>لینک اصلی</summary><p class="ltr break">{html.escape(config.sub_link)}</p></details><form class="delete-form" method="post" action="/admin/subscriptions/{config.id}/delete"><button class="danger">حذف</button></form></article>"""
 
     rows = "".join(row(config) for config in configs) or "<div class='empty-admin'>هنوز لینکی ثبت نشده است.</div>"
     flash = f"<div class='notice'>{html.escape(notice)}</div>" if notice else f"<div class='error'>{html.escape(error)}</div>" if error else ""
@@ -1348,7 +1364,7 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
     }
     return f"""<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>مدیریت پنل اشتراک</title><link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet"><style>
 *{{box-sizing:border-box;letter-spacing:0}}body{{margin:0;background:#f4f7fb;color:#172033;font-family:Vazirmatn,Tahoma,sans-serif}}main{{max-width:1100px;margin:auto;padding:24px 16px 50px}}header{{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}}h1{{font-size:25px;margin:0}}h2{{font-size:18px;margin:0 0 16px}}.card{{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:20px;margin-bottom:16px;box-shadow:0 8px 24px rgba(15,23,42,.05)}}.grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}}label{{display:grid;gap:6px;color:#64748b;font-size:13px}}input,textarea{{border:1px solid #cbd5e1;border-radius:8px;padding:11px;font:inherit;color:#172033;min-width:0}}textarea{{min-height:88px;resize:vertical}}button{{border:0;border-radius:8px;background:{panel.primary_color};color:white;padding:11px 16px;font:inherit;font-weight:700;cursor:pointer}}.danger{{background:#dc2626;padding:7px 10px}}.wide{{grid-column:1/-1}}.notice,.error{{padding:11px;border-radius:8px;margin-bottom:16px;overflow-wrap:anywhere}}.notice{{background:#dcfce7;color:#166534}}.error{{background:#fee2e2;color:#991b1b}}a{{color:{panel.primary_color};font-weight:700}}.actions{{display:flex;justify-content:flex-end;margin-top:14px}}.toggle,.tiny-toggle{{display:flex;align-items:center;gap:8px}}.template-settings{{overflow:hidden}}.template-summary{{display:flex;align-items:center;justify-content:space-between;gap:12px;list-style:none;color:#172033}}.template-summary::-webkit-details-marker{{display:none}}.template-title{{display:grid;gap:4px}}.template-title h2{{margin:0}}.template-title span{{color:#64748b;font-size:13px}}.summary-pill{{background:#eef2ff;color:{panel.primary_color};border:1px solid #c7d2fe;border-radius:8px;padding:8px 12px;font-weight:800;white-space:nowrap}}.template-settings[open] .summary-pill{{background:#f1f5f9;color:#334155;border-color:#cbd5e1}}.template-settings form{{margin-top:18px;padding-top:18px;border-top:1px solid #e2e8f0}}.sub-tools{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end;margin-bottom:14px}}.sub-tools label{{font-size:13px}}.search-count{{color:#64748b;font-size:13px;padding:11px 0;white-space:nowrap}}.sub-list{{display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:14px;align-items:start}}.sub-card{{border:1px solid #e2e8f0;border-radius:8px;padding:14px;background:#f8fafc;display:grid;gap:12px;min-width:0}}.sub-card[hidden]{{display:none}}.sub-card-head{{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding-bottom:10px;border-bottom:1px solid #e2e8f0}}.sub-card-head div{{display:grid;gap:4px;min-width:0}}.sub-card-head strong{{overflow-wrap:anywhere}}.sub-card-head span{{color:#64748b;font-size:12px;overflow-wrap:anywhere}}.sub-card-head b{{white-space:nowrap;color:{panel.primary_color};background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:6px 9px}}.link-panel{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:10px}}.link-panel span{{display:block;color:#64748b;font-size:12px;margin-bottom:4px}}.sub-grid{{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.25fr);gap:10px}}.inline-form,.stack-form{{display:grid;gap:8px;align-content:start;background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:10px}}.inline-form{{grid-template-columns:minmax(0,1fr) auto;align-items:end}}.inline-form button,.stack-form button,.copy-admin{{padding:8px 11px}}.copy-admin{{background:#334155;white-space:nowrap}}.toggle-row{{display:flex;flex-wrap:wrap;gap:12px}}.break{{overflow-wrap:anywhere;white-space:normal}}.ltr{{direction:ltr;text-align:left}}details{{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:8px}}summary{{cursor:pointer;color:#64748b}}.delete-form{{display:flex;justify-content:flex-end}}.empty-admin{{padding:16px;color:#64748b;text-align:center}}#empty-search{{display:none}}@media(max-width:700px){{main{{padding:18px 10px 40px}}header{{display:grid;gap:10px}}.grid,.sub-grid,.inline-form,.sub-tools,.link-panel{{grid-template-columns:1fr}}.wide{{grid-column:auto}}.sub-list{{grid-template-columns:1fr}}.sub-card-head{{display:grid}}.template-summary{{align-items:flex-start;display:grid}}.summary-pill{{justify-self:start}}}}</style></head><body><main><header><div><h1>مدیریت Phantom Subscription</h1><span>ساخته‌شده بر پایه ظاهر marzban-template</span></div><a href="{settings.public_base_url}/health">وضعیت سرویس</a></header>{flash}
-<section class="card"><h2>تبدیل دستی لینک ساب</h2><form method="post" action="/admin/subscriptions"><div class="grid"><label class="wide">لینک اصلی سابسکریپشن<input name="upstream_url" type="url" required placeholder="https://example.com/token/..."></label><label>توکن دلخواه، اختیاری<input name="token" placeholder="اگر خالی باشد خودکار ساخته می‌شود"></label><label>نام سرویس<input name="service_name"></label><label>نام نمایشی اختصاصی داخل برنامه‌ها<input name="profile_title" placeholder="فقط برای همین لینک"></label><label>محدودیت کاربر/دستگاه همین لینک<input name="device_limit" type="number" min="0" value="0" placeholder="0 یعنی نامحدود"></label><label>کانال/پشتیبانی اختصاصی<input name="channel_handle" placeholder="@PhantomHubsSupport"></label><label>حجم گیگ<input name="volume_gb" type="number" min="0" value="0"></label><label>دسته‌بندی<input name="category_key" value="manual"></label><label class="toggle"><input name="show_header" type="checkbox" checked> نمایش هدر سایت</label><label class="toggle"><input name="show_config_preview" type="checkbox" checked> نمایش کانفیگ‌های اشتراک</label></div><div class="actions"><button>ساخت لینک اختصاصی</button></div></form></section>
+<section class="card"><h2>تبدیل دستی لینک ساب</h2><form method="post" action="/admin/subscriptions"><div class="grid"><label class="wide">لینک اصلی سابسکریپشن<input name="upstream_url" type="url" required placeholder="https://example.com/token/..."></label><label>توکن دلخواه، اختیاری<input name="token" placeholder="اگر خالی باشد خودکار ساخته می‌شود"></label><label>نام سرویس<input name="service_name"></label><label>نام نمایشی اختصاصی داخل برنامه‌ها<input name="profile_title" placeholder="فقط برای همین لینک"></label><label>محدودیت کاربر/دستگاه همین لینک<input name="device_limit" type="number" min="0" value="0" placeholder="0 یعنی نامحدود"></label><label>کانال/پشتیبانی اختصاصی<input name="channel_handle" placeholder="@PhantomHubsSupport"></label><label>حجم گیگ<input name="volume_gb" type="number" min="0" value="0"></label><label>دسته‌بندی<input name="category_key" value="manual"></label><label class="toggle"><input name="show_header" type="checkbox" checked> نمایش هدر سایت</label><label class="toggle"><input name="show_config_preview" type="checkbox" checked> نمایش کانفیگ‌های اشتراک</label><label class="toggle"><input name="info_proxies_enabled" type="checkbox"> افزودن کانفیگ‌های اطلاعاتی</label></div><div class="actions"><button>ساخت لینک اختصاصی</button></div></form></section>
 <details class="card template-settings"><summary class="template-summary"><div class="template-title"><h2>تنظیمات کامل قالب</h2><span>رنگ‌ها، متن‌ها، دکمه‌ها و نمایش بخش‌های صفحه اشتراک</span></div><span class="summary-pill">باز/بستن تنظیمات</span></summary><form method="post" action="/admin/settings"><div class="grid">
 <label>نام برند<input name="brand_name" value="{html.escape(panel.brand_name)}"></label><label>آیدی کانال<input name="channel_handle" value="{html.escape(panel.channel_handle)}"></label>
 <label class="wide">نام نمایشی سابسکریپشن داخل برنامه‌ها<input name="subscription_profile_title" value="{html.escape(panel.subscription_profile_title)}" placeholder="خالی باشد، نام لینک اصلی یا نام سرویس استفاده می‌شود"></label>
