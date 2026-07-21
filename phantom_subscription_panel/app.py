@@ -48,6 +48,7 @@ FORWARDED_HEADERS = (
     "last-modified",
 )
 GENERIC_SUBSCRIPTION_TITLES = {"subscription", "sub", "subscription information"}
+UPSTREAM_BRAND_SUFFIXES = ("Upgo",)
 QUICK_CONNECT_KEYS = ("v2rayng", "hiddify", "streisand", "singbox", "v2box", "happ")
 _cache_refresh_tasks: set[str] = set()
 _memory_cache: dict[str, dict] = {}
@@ -737,11 +738,11 @@ def _clean_web_title(value: str) -> str:
         for separator in separators:
             suffix = f"{separator}{generic}"
             if title.casefold().endswith(suffix.casefold()):
-                return title[: -len(suffix)].strip()
+                return _clean_upstream_brand_suffix(title[: -len(suffix)].strip())
     for suffix in (" - Sub Info", " | Sub Info", " — Sub Info"):
         if title.endswith(suffix):
-            return title[: -len(suffix)].strip()
-    return title
+            return _clean_upstream_brand_suffix(title[: -len(suffix)].strip())
+    return _clean_upstream_brand_suffix(title)
 
 
 def _cache_path(url: str) -> Path:
@@ -951,12 +952,13 @@ def _decode_subscription_text(body: bytes) -> tuple[str, bool]:
 
 def _subscription_body_with_info_proxies(config: Config, upstream: dict) -> bytes:
     if not bool(config.info_proxies_enabled):
-        return upstream["body"]
+        return _subscription_body_without_branded_suffixes(upstream["body"])
     text, was_base64 = _decode_subscription_text(upstream["body"])
     lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lines = [_clean_config_line_display_name(line) for line in lines]
     info_lines = _info_proxy_lines(config, upstream)
     if not info_lines:
-        return upstream["body"]
+        return _subscription_body_without_branded_suffixes(upstream["body"])
     # Put status entries first so apps show them at the top of the profile.
     content = "\n".join([*info_lines, *lines]).strip() + "\n"
     if was_base64:
@@ -1003,6 +1005,51 @@ def _remaining_days_label(expire: int | None) -> str:
     return f"{days} day"
 
 
+def _clean_upstream_brand_suffix(value: str) -> str:
+    cleaned = (value or "").strip()
+    separators = (" · ", " - ", " | ", " — ", " – ")
+    changed = True
+    while changed and cleaned:
+        changed = False
+        for brand in UPSTREAM_BRAND_SUFFIXES:
+            if cleaned.casefold() == brand.casefold():
+                return ""
+            for separator in separators:
+                suffix = f"{separator}{brand}"
+                if cleaned.casefold().endswith(suffix.casefold()):
+                    cleaned = cleaned[: -len(suffix)].strip()
+                    changed = True
+                    break
+            if changed:
+                break
+    return cleaned
+
+
+def _clean_config_line_display_name(line: str) -> str:
+    if "#" not in line:
+        return line
+    base, fragment = line.rsplit("#", 1)
+    title = unquote(fragment).strip()
+    cleaned = _clean_upstream_brand_suffix(title)
+    if cleaned == title:
+        return line
+    return f"{base}#{quote(cleaned, safe='')}"
+
+
+def _subscription_body_without_branded_suffixes(body: bytes) -> bytes:
+    text, was_base64 = _decode_subscription_text(body)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return body
+    cleaned_lines = [_clean_config_line_display_name(line) for line in lines]
+    if cleaned_lines == lines:
+        return body
+    content = "\n".join(cleaned_lines).strip() + "\n"
+    if was_base64:
+        return base64.b64encode(content.encode("utf-8"))
+    return content.encode("utf-8")
+
+
 def _parse_subscription_userinfo(value: str) -> dict[str, int]:
     values: dict[str, int] = {}
     for item in value.split(";"):
@@ -1040,12 +1087,12 @@ def _upstream_title(headers: httpx.Headers) -> str:
     profile_title = _decode_profile_title(headers.get("profile-title", ""))
     disposition_title = _content_disposition_title(headers.get("content-disposition", ""))
     if _usable_subscription_title(profile_title):
-        return profile_title.strip()
-    return _usable_subscription_title(disposition_title) or "Subscription"
+        return _clean_upstream_brand_suffix(profile_title.strip())
+    return _clean_upstream_brand_suffix(_usable_subscription_title(disposition_title)) or "Subscription"
 
 
 def _usable_subscription_title(value: str | None) -> str:
-    title = (value or "").strip()
+    title = _clean_upstream_brand_suffix(value or "")
     if not title:
         return ""
     if title.casefold() in GENERIC_SUBSCRIPTION_TITLES:
@@ -1238,7 +1285,7 @@ def _subscription_title_headers(title: str) -> dict[str, str]:
 
 
 def _config_name(line: str, index: int) -> str:
-    fragment = unquote(urlparse(line).fragment).strip()
+    fragment = _clean_upstream_brand_suffix(unquote(urlparse(line).fragment).strip())
     return fragment or f"کانفیگ {index}"
 
 
