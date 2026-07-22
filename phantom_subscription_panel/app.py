@@ -1196,22 +1196,52 @@ def _client_ip_hint(request: Request) -> str:
 
 def _normalized_device_user_agent(user_agent: str) -> str:
     value = user_agent.strip().lower()
-    value = re.sub(r"\b\d+(?:\.\d+){1,4}\b", "{version}", value)
+    # Strip short app/OS version tokens while preserving long installation IDs
+    # such as Happ's per-device numeric identifier.
+    value = re.sub(r"([/\s])v?\d{1,4}(?:\.\d+){0,4}\b", r"\1{version}", value)
     value = re.sub(r"\s+", " ", value)
     return value[:300]
 
 
-def _device_fingerprints(request: Request) -> tuple[str, str, str, str]:
+def _explicit_device_identifier(request: Request) -> str:
+    for header in ("x-hwid", "hwid", "x-device-id", "device-id", "x-client-id", "x-install-id"):
+        value = request.headers.get(header, "").strip()
+        if 6 <= len(value) <= 300:
+            return f"{header}:{value.casefold()}"
+    return ""
+
+
+def _is_trackable_device_request(user_agent: str) -> bool:
+    value = user_agent.strip().casefold()
+    if not value:
+        return False
+    ignored_clients = (
+        "bot",
+        "crawler",
+        "spider",
+        "preview",
+        "google-read-aloud",
+        "facebookexternalhit",
+        "telegrambot",
+        "whatsapp",
+    )
+    return not any(client in value for client in ignored_clients)
+
+
+def _device_fingerprints(request: Request) -> tuple[str, str, str, str, str]:
     user_agent = request.headers.get("user-agent", "").strip()[:300]
     accept_language = request.headers.get("accept-language", "").strip()[:120]
     ip_hint = _client_ip_hint(request)[:120]
-    stable_seed = "\n".join([_normalized_device_user_agent(user_agent), accept_language])
+    explicit_identifier = _explicit_device_identifier(request)
+    identity_kind = "explicit" if explicit_identifier else "user-agent"
+    stable_seed = explicit_identifier or _normalized_device_user_agent(user_agent)
     legacy_seed = "\n".join([user_agent, accept_language, ip_hint])
     return (
-        hashlib.sha256(stable_seed.encode("utf-8")).hexdigest(),
+        f"v2:{identity_kind}:{hashlib.sha256(stable_seed.encode('utf-8')).hexdigest()}",
         hashlib.sha256(legacy_seed.encode("utf-8")).hexdigest(),
         user_agent,
         ip_hint,
+        identity_kind,
     )
 
 
@@ -1219,18 +1249,42 @@ async def _enforce_device_limit(config: Config, request: Request) -> None:
     limit = _device_limit_for_subscription(config)
     if limit <= 0:
         return
-    fingerprint, legacy_fingerprint, user_agent, ip_hint = _device_fingerprints(request)
+    fingerprint, legacy_fingerprint, user_agent, ip_hint, identity_kind = _device_fingerprints(request)
+    if not _is_trackable_device_request(user_agent):
+        return
     now = datetime.now(timezone.utc)
     async with async_session() as session:
-        existing = (
-            await session.execute(
-                select(SubscriptionDevice).where(
-                    SubscriptionDevice.public_sub_token == config.public_sub_token,
-                    SubscriptionDevice.fingerprint.in_({fingerprint, legacy_fingerprint}),
-                )
+        device_result = await session.execute(
+            select(SubscriptionDevice).where(
+                SubscriptionDevice.public_sub_token == config.public_sub_token
             )
-        ).scalar_one_or_none()
+        )
+        devices = list(device_result.scalars().all())
+        direct_matches = [
+            device for device in devices if device.fingerprint in {fingerprint, legacy_fingerprint}
+        ]
+        ua_matches = [
+            device
+            for device in devices
+            if _normalized_device_user_agent(device.user_agent or "")
+            == _normalized_device_user_agent(user_agent)
+        ]
+        # Older fingerprints included language and IP. A single matching client
+        # signature is the same installation being migrated to the stable v2 key.
+        has_v2_identity = any((device.fingerprint or "").startswith("v2:") for device in devices)
+        migration_matches = (
+            ua_matches
+            if identity_kind == "user-agent"
+            else ua_matches[:1] if not has_v2_identity else []
+        )
+        matches = direct_matches or migration_matches
+        existing = matches[0] if matches else None
         if existing is not None:
+            duplicate_ids = {device.id for device in matches[1:]}
+            if duplicate_ids:
+                await session.execute(
+                    delete(SubscriptionDevice).where(SubscriptionDevice.id.in_(duplicate_ids))
+                )
             existing.fingerprint = fingerprint
             existing.user_agent = user_agent
             existing.ip_hint = ip_hint
