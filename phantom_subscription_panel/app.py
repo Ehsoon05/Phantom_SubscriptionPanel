@@ -386,6 +386,46 @@ async def admin_update_subscription_device_limit(
     return RedirectResponse("/admin", status_code=303)
 
 
+@app.post("/admin/subscriptions/{config_id}/upstream", response_class=HTMLResponse)
+async def admin_update_subscription_upstream(
+    config_id: int,
+    upstream_url: str = Form(...),
+    _: str = Depends(_require_admin),
+) -> str:
+    upstream_url = upstream_url.strip()
+    parsed = urlparse(upstream_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return await _render_admin(load_panel_settings(), error="لینک اصلی جدید معتبر نیست.")
+
+    async with async_session() as session:
+        config = await session.get(Config, config_id)
+        if not config:
+            return await _render_admin(load_panel_settings(), error="لینک موردنظر پیدا نشد.")
+        old_url = config.sub_link
+        if old_url == upstream_url:
+            return await _render_admin(load_panel_settings(), notice="لینک اصلی تغییری نکرد.")
+
+        existing = (
+            await session.execute(
+                select(Config.id).where(Config.sub_link == upstream_url, Config.id != config.id)
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return await _render_admin(load_panel_settings(), error="این لینک اصلی قبلاً برای یک لینک دیگر ثبت شده است.")
+
+        config.sub_link = upstream_url
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            return await _render_admin(load_panel_settings(), error="این لینک اصلی قبلاً ثبت شده است.")
+
+    _clear_upstream_cache(old_url)
+    _clear_upstream_cache(upstream_url)
+    _schedule_cache_refresh(upstream_url)
+    return await _render_admin(load_panel_settings(), notice="لینک اصلی با موفقیت جایگزین شد.")
+
+
 @app.post("/admin/subscriptions/{config_id}/devices/reset")
 async def admin_reset_subscription_devices(config_id: int, _: str = Depends(_require_admin)) -> RedirectResponse:
     async with async_session() as session:
@@ -797,6 +837,15 @@ def _write_upstream_cache(url: str, upstream: dict) -> None:
         temporary_path.replace(path)
     except OSError:
         temporary_path.unlink(missing_ok=True)
+
+
+def _clear_upstream_cache(url: str) -> None:
+    _memory_cache.pop(url, None)
+    _memory_cache.pop(f"web-title:{url}", None)
+    try:
+        _cache_path(url).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _schedule_cache_refresh(url: str) -> None:
@@ -1419,7 +1468,7 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
             ]
         )
         volume_text = "نامحدود" if not config.volume_gb else f"{config.volume_gb} GB"
-        return f"""<article class="sub-card" data-search="{html.escape(search_text.casefold(), quote=True)}"><div class="sub-card-head"><div><strong>{html.escape(config.service_name or "-")}</strong><span>{html.escape(config.profile_title or "نام اختصاصی ندارد")}</span></div><b>{html.escape(volume_text)}</b></div><div class="link-panel"><div><span>لینک ساخته‌شده</span><a class="ltr break" href="{public_url}" target="_blank">{html.escape(public_url)}</a></div><button type="button" class="copy-admin" onclick="copyAdminLink({html.escape(json.dumps(public_url), quote=True)})">کپی لینک</button></div><div class="sub-grid"><form class="inline-form" method="post" action="/admin/subscriptions/{config.id}/device-limit"><label>محدودیت کاربر/دستگاه<input name="device_limit" type="number" min="0" value="{config.device_limit if config.device_limit is not None else 0}" title="0 یعنی نامحدود"></label><button>ثبت</button></form><form class="stack-form" method="post" action="/admin/subscriptions/{config.id}/display"><div class="toggle-row"><label class="tiny-toggle"><input name="show_header" type="checkbox" {header_checked}> هدر</label><label class="tiny-toggle"><input name="show_config_preview" type="checkbox" {preview_checked}> کانفیگ‌ها</label><label class="tiny-toggle"><input name="info_proxies_enabled" type="checkbox" {info_checked}> کانفیگ‌های اطلاعاتی</label></div><label>نام نمایشی داخل برنامه‌ها<input name="profile_title" value="{html.escape(config.profile_title or '')}" placeholder="مثلا PhantomHubs VIP"></label><label>Username پنل برای کانفیگ آدمک<input name="panel_username" value="{html.escape(config.panel_username or '')}" placeholder="مثلا PhantomExpress10GB-VIP1"></label><label>کانال اختصاصی<input name="channel_handle" value="{channel_value}" placeholder="@SupportChannel"></label><button>ذخیره نمایش</button></form></div><div class="device-panel"><span>دستگاه‌های ثبت‌شده: <b>{device_count}</b></span><form method="post" action="/admin/subscriptions/{config.id}/devices/reset"><button type="submit">ریست شمارش</button></form><form method="post" action="/admin/subscriptions/{config.id}/revoke" onsubmit="return confirm('لینک قبلی باطل و لینک جدید ساخته شود؟')"><button type="submit" class="danger">Revoke لینک</button></form></div><details><summary>لینک اصلی</summary><p class="ltr break">{html.escape(config.sub_link)}</p></details><form class="delete-form" method="post" action="/admin/subscriptions/{config.id}/delete"><button class="danger">حذف</button></form></article>"""
+        return f"""<article class="sub-card" data-search="{html.escape(search_text.casefold(), quote=True)}"><div class="sub-card-head"><div><strong>{html.escape(config.service_name or "-")}</strong><span>{html.escape(config.profile_title or "نام اختصاصی ندارد")}</span></div><b>{html.escape(volume_text)}</b></div><div class="link-panel"><div><span>لینک ساخته‌شده</span><a class="ltr break" href="{public_url}" target="_blank">{html.escape(public_url)}</a></div><button type="button" class="copy-admin" onclick="copyAdminLink({html.escape(json.dumps(public_url), quote=True)})">کپی لینک</button></div><div class="sub-grid"><form class="inline-form" method="post" action="/admin/subscriptions/{config.id}/device-limit"><label>محدودیت کاربر/دستگاه<input name="device_limit" type="number" min="0" value="{config.device_limit if config.device_limit is not None else 0}" title="0 یعنی نامحدود"></label><button>ثبت</button></form><form class="stack-form" method="post" action="/admin/subscriptions/{config.id}/display"><div class="toggle-row"><label class="tiny-toggle"><input name="show_header" type="checkbox" {header_checked}> هدر</label><label class="tiny-toggle"><input name="show_config_preview" type="checkbox" {preview_checked}> کانفیگ‌ها</label><label class="tiny-toggle"><input name="info_proxies_enabled" type="checkbox" {info_checked}> کانفیگ‌های اطلاعاتی</label></div><label>نام نمایشی داخل برنامه‌ها<input name="profile_title" value="{html.escape(config.profile_title or '')}" placeholder="مثلا PhantomHubs VIP"></label><label>Username پنل برای کانفیگ آدمک<input name="panel_username" value="{html.escape(config.panel_username or '')}" placeholder="مثلا PhantomExpress10GB-VIP1"></label><label>کانال اختصاصی<input name="channel_handle" value="{channel_value}" placeholder="@SupportChannel"></label><button>ذخیره نمایش</button></form></div><div class="device-panel"><span>دستگاه‌های ثبت‌شده: <b>{device_count}</b></span><form method="post" action="/admin/subscriptions/{config.id}/devices/reset"><button type="submit">ریست شمارش</button></form><form method="post" action="/admin/subscriptions/{config.id}/revoke" onsubmit="return confirm('لینک قبلی باطل و لینک جدید ساخته شود؟')"><button type="submit" class="danger">Revoke لینک</button></form></div><details><summary>لینک اصلی</summary><p class="ltr break">{html.escape(config.sub_link)}</p><form class="replace-form" method="post" action="/admin/subscriptions/{config.id}/upstream" onsubmit="return confirm('لینک اصلی این اشتراک جایگزین شود؟ لینک ساخته‌شده و توکن فعلی حفظ می‌شود.')"><label>جایگزینی لینک اصلی<input name="upstream_url" type="url" required dir="ltr" value="{html.escape(config.sub_link, quote=True)}"></label><button type="submit">جایگزینی لینک اصلی</button></form></details><form class="delete-form" method="post" action="/admin/subscriptions/{config.id}/delete"><button class="danger">حذف</button></form></article>"""
 
     rows = "".join(row(config) for config in configs) or "<div class='empty-admin'>هنوز لینکی ثبت نشده است.</div>"
     flash = f"<div class='notice'>{html.escape(notice)}</div>" if notice else f"<div class='error'>{html.escape(error)}</div>" if error else ""
@@ -1467,4 +1516,4 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
 <label class="toggle"><input name="show_config_copy" type="checkbox" {checked['copy']}> نمایش کپی هر کانفیگ</label>
 <label class="toggle"><input name="show_config_qr" type="checkbox" {checked['qr']}> نمایش QR هر کانفیگ</label>
 </div><div class="actions"><button>ذخیره تنظیمات</button></div></form></details>
-<section class="card"><h2>لینک‌های ثبت‌شده</h2><div class="sub-tools"><label>جستجو بین اسم، لینک اصلی و لینک ساخته‌شده<input id="subscription-search" placeholder="مثلا Phantom، token، یا بخشی از لینک"></label><div class="search-count"><span id="visible-count">{len(configs)}</span> / {len(configs)} لینک</div></div><div class="sub-list" id="subscription-list">{rows}</div><div class="empty-admin" id="empty-search">موردی با این جستجو پیدا نشد.</div></section></main><script>async function copyAdminLink(value){{try{{await navigator.clipboard.writeText(value);alert('لینک کپی شد.')}}catch(error){{prompt('برای کپی لینک:',value)}}}}const searchInput=document.getElementById('subscription-search');const cards=[...document.querySelectorAll('.sub-card')];const visibleCount=document.getElementById('visible-count');const emptySearch=document.getElementById('empty-search');function filterSubscriptions(){{const term=(searchInput.value||'').trim().toLocaleLowerCase('fa-IR');let shown=0;cards.forEach(card=>{{const match=!term||card.dataset.search.includes(term);card.hidden=!match;if(match)shown+=1}});visibleCount.textContent=shown;emptySearch.style.display=cards.length&&shown===0?'block':'none'}}searchInput.addEventListener('input',filterSubscriptions);</script></body></html>"""
+<section class="card"><h2>لینک‌های ثبت‌شده</h2><div class="sub-tools"><label>جستجو بین اسم، لینک اصلی و لینک ساخته‌شده<input id="subscription-search" placeholder="مثلا Phantom، token، یا بخشی از لینک"></label><div class="search-count"><span id="visible-count">{len(configs)}</span> / {len(configs)} لینک</div></div><div class="sub-list" id="subscription-list">{rows}</div><div class="empty-admin" id="empty-search">موردی با این جستجو پیدا نشد.</div></section></main><style>.replace-form{{display:grid;gap:9px;margin-top:10px;padding-top:10px;border-top:1px solid #e2e8f0}}.replace-form button{{justify-self:start;background:#0f766e}}</style><script>async function copyAdminLink(value){{try{{await navigator.clipboard.writeText(value);alert('لینک کپی شد.')}}catch(error){{prompt('برای کپی لینک:',value)}}}}const searchInput=document.getElementById('subscription-search');const cards=[...document.querySelectorAll('.sub-card')];const visibleCount=document.getElementById('visible-count');const emptySearch=document.getElementById('empty-search');function filterSubscriptions(){{const term=(searchInput.value||'').trim().toLocaleLowerCase('fa-IR');let shown=0;cards.forEach(card=>{{const match=!term||card.dataset.search.includes(term);card.hidden=!match;if(match)shown+=1}});visibleCount.textContent=shown;emptySearch.style.display=cards.length&&shown===0?'block':'none'}}searchInput.addEventListener('input',filterSubscriptions);</script></body></html>"""
