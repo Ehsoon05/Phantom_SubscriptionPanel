@@ -1203,6 +1203,27 @@ def _normalized_device_user_agent(user_agent: str) -> str:
     return value[:300]
 
 
+def _device_client_family(user_agent: str) -> str:
+    value = user_agent.strip().casefold()
+    aliases = (
+        ("v2rayng", ("v2rayng",)),
+        ("v2box", ("v2box",)),
+        ("hiddify", ("hiddify",)),
+        ("happ", ("happ/", "happ ")),
+        ("streisand", ("streisand",)),
+        ("sing-box", ("sing-box", "singbox", "sfa/")),
+        ("nekobox", ("nekobox",)),
+        ("clash", ("clash", "stash/")),
+        ("shadowrocket", ("shadowrocket",)),
+        ("wireguard", ("wireguard",)),
+    )
+    for family, markers in aliases:
+        if any(marker in value for marker in markers):
+            return family
+    product = re.match(r"\s*([a-z][a-z0-9._-]{2,40})", value)
+    return product.group(1) if product else ""
+
+
 def _explicit_device_identifier(request: Request) -> str:
     for header in ("x-hwid", "hwid", "x-device-id", "device-id", "x-client-id", "x-install-id"):
         value = request.headers.get(header, "").strip()
@@ -1269,18 +1290,36 @@ async def _enforce_device_limit(config: Config, request: Request) -> None:
             if _normalized_device_user_agent(device.user_agent or "")
             == _normalized_device_user_agent(user_agent)
         ]
+        client_family = _device_client_family(user_agent)
+        legacy_family_matches = [
+            device
+            for device in devices
+            if not (device.fingerprint or "").startswith("v2:")
+            and client_family
+            and _device_client_family(device.user_agent or "") == client_family
+        ]
         # Older fingerprints included language and IP. A single matching client
-        # signature is the same installation being migrated to the stable v2 key.
-        has_v2_identity = any((device.fingerprint or "").startswith("v2:") for device in devices)
+        # family is migrated once, and its duplicate IP/version records are removed.
+        has_v2_family_identity = any(
+            (device.fingerprint or "").startswith("v2:")
+            and _device_client_family(device.user_agent or "") == client_family
+            for device in devices
+        )
         migration_matches = (
-            ua_matches
+            ua_matches or legacy_family_matches
             if identity_kind == "user-agent"
-            else ua_matches[:1] if not has_v2_identity else []
+            else (ua_matches or legacy_family_matches)[:1] if not has_v2_family_identity else []
         )
         matches = direct_matches or migration_matches
         existing = matches[0] if matches else None
         if existing is not None:
-            duplicate_ids = {device.id for device in matches[1:]}
+            cleanup_matches = {
+                device.id: device
+                for device in [*matches, *legacy_family_matches]
+            }
+            duplicate_ids = {
+                device_id for device_id in cleanup_matches if device_id != existing.id
+            }
             if duplicate_ids:
                 await session.execute(
                     delete(SubscriptionDevice).where(SubscriptionDevice.id.in_(duplicate_ids))

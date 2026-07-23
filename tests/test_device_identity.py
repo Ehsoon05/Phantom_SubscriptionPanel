@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.requests import Request
 
 from phantom_subscription_panel.app import (
+    _device_client_family,
     _device_fingerprints,
     _enforce_device_limit,
     _is_trackable_device_request,
@@ -68,6 +69,14 @@ class DeviceIdentityTests(unittest.TestCase):
         self.assertFalse(_is_trackable_device_request("TelegramBot (like TwitterBot)"))
         self.assertFalse(_is_trackable_device_request("Google-Read-Aloud"))
         self.assertTrue(_is_trackable_device_request("v2rayNG/1.10.31"))
+
+    def test_client_family_survives_version_and_platform_format_changes(self) -> None:
+        self.assertEqual(_device_client_family("v2box/6.0.2"), "v2box")
+        self.assertEqual(_device_client_family("V2Box 10.1.4/iOS 26.0"), "v2box")
+        self.assertEqual(
+            _device_client_family("SFA/1.13.14 (685; sing-box 1.13.14; language en_US)"),
+            "sing-box",
+        )
 
 
 class DeviceLimitTests(unittest.IsolatedAsyncioTestCase):
@@ -144,6 +153,75 @@ class DeviceLimitTests(unittest.IsolatedAsyncioTestCase):
         async with self.session_factory() as session:
             count = await session.scalar(select(func.count(SubscriptionDevice.id)))
         self.assertEqual(count, 1)
+
+    async def test_current_device_cleans_legacy_duplicates_from_same_client_family(self) -> None:
+        config = await self._config(token="cleanup", limit=2)
+        current = _request(user_agent="v2box/6.0.2", hwid="device-000001")
+        current_fingerprints = _device_fingerprints(current)
+        now = datetime.now(timezone.utc)
+        async with self.session_factory() as session:
+            session.add_all(
+                [
+                    SubscriptionDevice(
+                        public_sub_token=config.public_sub_token,
+                        fingerprint=current_fingerprints[0],
+                        user_agent=current_fingerprints[2],
+                        ip_hint=current_fingerprints[3],
+                        first_seen_at=now,
+                        last_seen_at=now,
+                    ),
+                    SubscriptionDevice(
+                        public_sub_token=config.public_sub_token,
+                        fingerprint="legacy-v2box-ip-one",
+                        user_agent="V2Box 9.8.9;IOS 26.5",
+                        ip_hint="192.0.2.1",
+                        first_seen_at=now,
+                        last_seen_at=now,
+                    ),
+                    SubscriptionDevice(
+                        public_sub_token=config.public_sub_token,
+                        fingerprint="legacy-v2box-ip-two",
+                        user_agent="V2Box 10.1.4/iOS 26.0",
+                        ip_hint="198.51.100.2",
+                        first_seen_at=now,
+                        last_seen_at=now,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        with patch("phantom_subscription_panel.app.async_session", self.session_factory):
+            await _enforce_device_limit(config, current)
+
+        async with self.session_factory() as session:
+            devices = list((await session.execute(select(SubscriptionDevice))).scalars().all())
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0].fingerprint, current_fingerprints[0])
+
+    async def test_legacy_family_migrates_when_app_version_format_changed(self) -> None:
+        config = await self._config(token="family-migration", limit=1)
+        now = datetime.now(timezone.utc)
+        async with self.session_factory() as session:
+            session.add(
+                SubscriptionDevice(
+                    public_sub_token=config.public_sub_token,
+                    fingerprint="legacy-v2box",
+                    user_agent="V2Box 9.8.9;IOS 26.5",
+                    ip_hint="192.0.2.1",
+                    first_seen_at=now,
+                    last_seen_at=now,
+                )
+            )
+            await session.commit()
+
+        current = _request(user_agent="v2box/6.0.2", hwid="device-000001")
+        with patch("phantom_subscription_panel.app.async_session", self.session_factory):
+            await _enforce_device_limit(config, current)
+
+        async with self.session_factory() as session:
+            devices = list((await session.execute(select(SubscriptionDevice))).scalars().all())
+        self.assertEqual(len(devices), 1)
+        self.assertTrue(devices[0].fingerprint.startswith("v2:explicit:"))
 
 
 if __name__ == "__main__":
