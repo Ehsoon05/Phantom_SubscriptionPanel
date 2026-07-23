@@ -131,6 +131,7 @@ async def startup() -> None:
             await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN device_limit_last_warning_at DATETIME"))
         except SQLAlchemyError:
             pass
+    await _collapse_legacy_device_rows()
     settings.subscription_cache_dir.mkdir(parents=True, exist_ok=True)
     _upstream_client = httpx.AsyncClient(
         follow_redirects=True,
@@ -1264,6 +1265,40 @@ def _device_fingerprints(request: Request) -> tuple[str, str, str, str, str]:
         ip_hint,
         identity_kind,
     )
+
+
+async def _collapse_legacy_device_rows() -> int:
+    async with async_session() as session:
+        result = await session.execute(
+            select(SubscriptionDevice).where(
+                ~SubscriptionDevice.fingerprint.startswith("v2:")
+            )
+        )
+        devices = list(result.scalars().all())
+        grouped: dict[tuple[str, str], list[SubscriptionDevice]] = {}
+        for device in devices:
+            family = _device_client_family(device.user_agent or "")
+            if family:
+                grouped.setdefault((device.public_sub_token, family), []).append(device)
+
+        duplicate_ids: set[int] = set()
+        for matches in grouped.values():
+            matches.sort(
+                key=lambda device: (
+                    _as_aware(device.last_seen_at) or datetime.min.replace(tzinfo=timezone.utc),
+                    device.id,
+                ),
+                reverse=True,
+            )
+            duplicate_ids.update(device.id for device in matches[1:])
+        if not duplicate_ids:
+            return 0
+
+        await session.execute(
+            delete(SubscriptionDevice).where(SubscriptionDevice.id.in_(duplicate_ids))
+        )
+        await session.commit()
+        return len(duplicate_ids)
 
 
 async def _enforce_device_limit(config: Config, request: Request) -> None:

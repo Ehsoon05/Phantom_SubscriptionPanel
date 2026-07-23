@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.requests import Request
 
 from phantom_subscription_panel.app import (
+    _collapse_legacy_device_rows,
     _device_client_family,
     _device_fingerprints,
     _enforce_device_limit,
@@ -222,6 +223,67 @@ class DeviceLimitTests(unittest.IsolatedAsyncioTestCase):
             devices = list((await session.execute(select(SubscriptionDevice))).scalars().all())
         self.assertEqual(len(devices), 1)
         self.assertTrue(devices[0].fingerprint.startswith("v2:explicit:"))
+
+    async def test_startup_cleanup_collapses_only_legacy_rows_in_same_family(self) -> None:
+        first = await self._config(token="first-token", limit=2)
+        second = await self._config(token="second-token", limit=2)
+        now = datetime.now(timezone.utc)
+        async with self.session_factory() as session:
+            session.add_all(
+                [
+                    SubscriptionDevice(
+                        public_sub_token=first.public_sub_token,
+                        fingerprint="legacy-v2box-one",
+                        user_agent="V2Box 9.8.9;IOS 26.5",
+                        ip_hint="192.0.2.1",
+                        first_seen_at=now,
+                        last_seen_at=now,
+                    ),
+                    SubscriptionDevice(
+                        public_sub_token=first.public_sub_token,
+                        fingerprint="legacy-v2box-two",
+                        user_agent="v2box/6.0.2",
+                        ip_hint="198.51.100.2",
+                        first_seen_at=now,
+                        last_seen_at=now,
+                    ),
+                    SubscriptionDevice(
+                        public_sub_token=first.public_sub_token,
+                        fingerprint="legacy-happ",
+                        user_agent="Happ/4.14.0/ios/2607031625695",
+                        ip_hint="203.0.113.1",
+                        first_seen_at=now,
+                        last_seen_at=now,
+                    ),
+                    SubscriptionDevice(
+                        public_sub_token=second.public_sub_token,
+                        fingerprint="legacy-v2box-other-token",
+                        user_agent="V2Box 10.1.4/iOS 26.0",
+                        ip_hint="203.0.113.2",
+                        first_seen_at=now,
+                        last_seen_at=now,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        with patch("phantom_subscription_panel.app.async_session", self.session_factory):
+            deleted = await _collapse_legacy_device_rows()
+
+        self.assertEqual(deleted, 1)
+        async with self.session_factory() as session:
+            first_count = await session.scalar(
+                select(func.count(SubscriptionDevice.id)).where(
+                    SubscriptionDevice.public_sub_token == first.public_sub_token
+                )
+            )
+            second_count = await session.scalar(
+                select(func.count(SubscriptionDevice.id)).where(
+                    SubscriptionDevice.public_sub_token == second.public_sub_token
+                )
+            )
+        self.assertEqual(first_count, 2)
+        self.assertEqual(second_count, 1)
 
 
 if __name__ == "__main__":
