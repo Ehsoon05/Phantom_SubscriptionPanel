@@ -52,14 +52,28 @@ class Settings:
             )
         ),
     ).strip()
+    svn_fallback_endpoint_rewrites = os.getenv(
+        "SVN_FALLBACK_ENDPOINT_REWRITES",
+        "\n".join(
+            (
+                "fi.api.phantomhubs.shop:22010=fir.api.phantomhubs.shop:2053",
+                "tun.api.phantomhubs.shop:443=dyr.api.phantomhubs.shop:8443",
+                "tun.api.phantomhubs.shop:1963=xhr.api.phantomhubs.shop:2096",
+                "tun.api.phantomhubs.shop:2087=fnr.api.phantomhubs.shop:8880",
+                "white-mt.api.phantomhubs.shop:19302=mtd.api.phantomhubs.shop:2083",
+                "white-mtp.api.phantomhubs.shop:19302=mtpd.api.phantomhubs.shop:2087",
+            )
+        ),
+    ).strip()
     svn_ws_origin_host = os.getenv(
         "SVN_WS_ORIGIN_HOST",
         "bankmelat.global.ssl.fastly.net",
     ).strip().lower().strip(".")
     svn_ws_alias = os.getenv(
         "SVN_WS_ALIAS",
-        "ws.api.phantomhubs.shop",
+        "wsr.api.phantomhubs.shop",
     ).strip().lower().strip(".")
+    svn_ws_alias_port = int(os.getenv("SVN_WS_ALIAS_PORT", "8080"))
 
 
 settings = Settings()

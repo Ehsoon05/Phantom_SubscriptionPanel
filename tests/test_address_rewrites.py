@@ -7,6 +7,7 @@ from phantom_subscription_panel.app import (
     _automatic_svn_country_rewrites,
     _rewritten_subscription_lines,
     _rewrite_config_line_address,
+    _rewrite_svn_fallback_endpoint,
     _rewrite_svn_ws_address,
     _serialize_address_rewrites,
     _subscription_body_with_info_proxies,
@@ -116,9 +117,27 @@ class AddressRewriteTests(unittest.TestCase):
 
         self.assertEqual(
             rewritten,
-            "vless://user-id@ws.api.phantomhubs.shop:80"
+            "vless://user-id@wsr.api.phantomhubs.shop:8080"
             "?security=none&type=ws&path=&host=BankMelat.glObal.ssl.faStly.nEt.#Fastly",
         )
+
+    def test_svn_fallback_relays_rewrite_host_and_port(self) -> None:
+        cases = {
+            "fi.api.phantomhubs.shop:22010": "fir.api.phantomhubs.shop:2053",
+            "tun.api.phantomhubs.shop:443": "dyr.api.phantomhubs.shop:8443",
+            "tun.api.phantomhubs.shop:1963": "xhr.api.phantomhubs.shop:2096",
+            "tun.api.phantomhubs.shop:2087": "fnr.api.phantomhubs.shop:8880",
+            "white-mt.api.phantomhubs.shop:19302": "mtd.api.phantomhubs.shop:2083",
+            "white-mtp.api.phantomhubs.shop:19302": "mtpd.api.phantomhubs.shop:2087",
+        }
+
+        for source, target in cases.items():
+            with self.subTest(source=source):
+                line = f"vless://user@{source}?security=reality&type=xhttp#Test"
+                self.assertEqual(
+                    _rewrite_svn_fallback_endpoint(line),
+                    f"vless://user@{target}?security=reality&type=xhttp#Test",
+                )
 
     def test_non_matching_ws_host_is_not_rewritten(self) -> None:
         source = (
@@ -144,7 +163,7 @@ class AddressRewriteTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "@ws.api.phantomhubs.shop:80",
+            "@wsr.api.phantomhubs.shop:8080",
             base64.b64decode(rewritten).decode(),
         )
 
@@ -164,5 +183,5 @@ class AddressRewriteTests(unittest.TestCase):
         lines = _rewritten_subscription_lines(config, upstream)
 
         self.assertIn("@es.api.phantomhubs.shop:22009", lines[0])
-        self.assertIn("@tun.api.phantomhubs.shop:443", lines[1])
-        self.assertIn("@ws.api.phantomhubs.shop:80", lines[2])
+        self.assertIn("@dyr.api.phantomhubs.shop:8443", lines[1])
+        self.assertIn("@wsr.api.phantomhubs.shop:8080", lines[2])

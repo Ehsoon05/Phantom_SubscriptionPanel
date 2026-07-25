@@ -1022,6 +1022,7 @@ def _subscription_body_with_info_proxies(config: Config, upstream: dict) -> byte
     lines = [_clean_config_line_display_name(line) for line in lines]
     lines = [_rewrite_config_line_address(line, address_rewrites) for line in lines]
     if rewrite_svn_ws:
+        lines = [_rewrite_svn_fallback_endpoint(line) for line in lines]
         lines = [_rewrite_svn_ws_address(line) for line in lines]
     info_lines = _info_proxy_lines(config, upstream)
     if not info_lines:
@@ -1056,6 +1057,7 @@ def _rewritten_subscription_lines(config: Config, upstream: dict) -> list[str]:
         for line in upstream.get("lines", [])
     ]
     if rewrite_svn_ws:
+        lines = [_rewrite_svn_fallback_endpoint(line) for line in lines]
         lines = [_rewrite_svn_ws_address(line) for line in lines]
     return lines
 
@@ -1144,6 +1146,7 @@ def _subscription_body_without_branded_suffixes(
     if address_rewrites:
         cleaned_lines = [_rewrite_config_line_address(line, address_rewrites) for line in cleaned_lines]
     if rewrite_svn_ws:
+        cleaned_lines = [_rewrite_svn_fallback_endpoint(line) for line in cleaned_lines]
         cleaned_lines = [_rewrite_svn_ws_address(line) for line in cleaned_lines]
     if cleaned_lines == lines:
         return body
@@ -1238,13 +1241,48 @@ def _automatic_svn_country_rewrites(body: bytes) -> dict[str, str]:
     return rules
 
 
+def _rewrite_svn_fallback_endpoint(line: str) -> str:
+    match = re.match(
+        r"^(?P<prefix>[a-z][a-z0-9+.-]*://[^@\s]+@)"
+        r"(?P<host>\[[^\]]+\]|[^:/?#\s]+):(?P<port>\d+)(?P<suffix>.*)$",
+        line,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return line
+    source = (match.group("host").strip("[]").lower().rstrip("."), int(match.group("port")))
+    rules: dict[tuple[str, int], tuple[str, int]] = {}
+    for raw_rule in re.split(r"[\n,]+", settings.svn_fallback_endpoint_rewrites):
+        if "=" not in raw_rule:
+            continue
+        raw_source, raw_target = (part.strip().lower().rstrip(".") for part in raw_rule.split("=", 1))
+        try:
+            source_host, source_port = raw_source.rsplit(":", 1)
+            target_host, target_port = raw_target.rsplit(":", 1)
+            parsed_source_port = int(source_port)
+            parsed_target_port = int(target_port)
+        except (TypeError, ValueError):
+            continue
+        if not _valid_rewrite_host(source_host) or not _valid_rewrite_host(target_host):
+            continue
+        if not (1 <= parsed_source_port <= 65535 and 1 <= parsed_target_port <= 65535):
+            continue
+        rules[(source_host, parsed_source_port)] = (target_host, parsed_target_port)
+    target = rules.get(source)
+    if not target:
+        return line
+    return f"{match.group('prefix')}{target[0]}:{target[1]}{match.group('suffix')}"
+
+
 def _rewrite_svn_ws_address(line: str) -> str:
     alias = settings.svn_ws_alias
+    alias_port = settings.svn_ws_alias_port
     origin_host = settings.svn_ws_origin_host
-    if not alias or not origin_host:
+    if not alias or not origin_host or not (1 <= alias_port <= 65535):
         return line
     match = re.match(
-        r"^(?P<prefix>[a-z][a-z0-9+.-]*://[^@\s]+@)(?P<host>\[[^\]]+\]|[^:/?#\s]+)(?P<suffix>:\d+.*)$",
+        r"^(?P<prefix>[a-z][a-z0-9+.-]*://[^@\s]+@)"
+        r"(?P<host>\[[^\]]+\]|[^:/?#\s]+):\d+(?P<suffix>.*)$",
         line,
         flags=re.IGNORECASE,
     )
@@ -1261,7 +1299,7 @@ def _rewrite_svn_ws_address(line: str) -> str:
     ws_host = str((query.get("host") or [""])[0]).strip().lower().strip(".")
     if transport != "ws" or ws_host != origin_host:
         return line
-    return f"{match.group('prefix')}{alias}{match.group('suffix')}"
+    return f"{match.group('prefix')}{alias}:{alias_port}{match.group('suffix')}"
 
 
 def _parse_subscription_userinfo(value: str) -> dict[str, int]:
