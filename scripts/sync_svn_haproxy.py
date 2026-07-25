@@ -41,7 +41,12 @@ def main() -> None:
         subprocess.run(["systemctl", action, "haproxy.service"], check=True)
 
     print(f"Discovered {len(endpoints)} SVN country endpoints.")
-    print("HAProxy config updated and reloaded." if changed and args.reload else "HAProxy config is already current.")
+    if changed and args.reload:
+        print("HAProxy config updated and reloaded.")
+    elif changed:
+        print("HAProxy config updated; reload was not requested.")
+    else:
+        print("HAProxy config is already current.")
 
 
 def _fetch_country_endpoints(
@@ -59,7 +64,8 @@ def _fetch_country_endpoints(
         "Accept": "text/plain",
         "User-Agent": "PhantomSVNRelaySync/1.0",
     }
-    with httpx.Client(follow_redirects=True, timeout=20, verify=False, headers=headers) as client:
+    timeout = httpx.Timeout(8.0, connect=5.0)
+    with httpx.Client(follow_redirects=True, timeout=timeout, verify=False, headers=headers) as client:
         for url in urls:
             try:
                 response = client.get(url)
