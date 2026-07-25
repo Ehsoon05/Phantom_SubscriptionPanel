@@ -1,0 +1,9 @@
+[Unit]
+Description=Phantom SVN country TCP relay socket on port %i
+
+[Socket]
+ListenStream=0.0.0.0:%i
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target

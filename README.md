@@ -64,6 +64,11 @@ Optional TCP relay units are kept under `deploy/systemd/`. A relay hostname must
 use a DNS-only record because the regular Cloudflare HTTP proxy does not forward
 arbitrary Reality/TCP ports.
 
+The SVN country relays use the `phantom-svn-country-relay@.socket` and
+`phantom-svn-country-relay@.service` templates. Enable one socket instance for
+each required country port. Country hostnames use the two-letter prefix under
+`*.api.phantomhubs.shop`, for example `es.api.phantomhubs.shop`.
+
 Admin page:
 
 ```text

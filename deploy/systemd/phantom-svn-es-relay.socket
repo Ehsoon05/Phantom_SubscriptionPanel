@@ -1,9 +1,0 @@
-[Unit]
-Description=Phantom SVN Spain TCP relay socket
-
-[Socket]
-ListenStream=0.0.0.0:22009
-NoDelay=true
-
-[Install]
-WantedBy=sockets.target
