@@ -15,6 +15,15 @@ import httpx
 
 
 CONFIG_SCHEMES = ("vless://", "trojan://")
+STATIC_RELAYS = (
+    ("ws_fallback", 8080, "bankmelat.global.ssl.fastly.net", 80),
+    ("fi_fallback", 2053, "fi.sv.temas-bor.ir", 22010),
+    ("mt_fallback", 2083, "white-mt.jorzel.ir", 19302),
+    ("mtp_fallback", 2087, "white-mtp.jorzel.ir", 19302),
+    ("xhttp_fallback", 2096, "tun.temas-bor.ir", 1963),
+    ("tcp_none_fallback", 8880, "tun.temas-bor.ir", 2087),
+    ("dynamic_fallback", 8443, "tun.temas-bor.ir", 443),
+)
 
 
 def main() -> None:
@@ -129,6 +138,11 @@ def _decode_subscription(body: bytes) -> str:
 
 
 def _render_haproxy(endpoints: dict[int, str]) -> str:
+    static_ports = {listen_port for _, listen_port, _, _ in STATIC_RELAYS}
+    conflicts = static_ports.intersection(endpoints)
+    if conflicts:
+        ports = ", ".join(str(port) for port in sorted(conflicts))
+        raise ValueError(f"SVN country endpoints conflict with static relay ports: {ports}")
     sections = [
         """global
     maxconn 50000
@@ -163,6 +177,17 @@ frontend svn_{label}_{port}
 
 backend svn_{label}_{port}_origin
     server origin {host}:{port} check inter 10s fall 3 rise 2 resolvers public_dns resolve-prefer ipv4 init-addr last,libc,none
+"""
+        )
+    for label, listen_port, host, target_port in STATIC_RELAYS:
+        sections.append(
+            f"""
+frontend svn_{label}_{listen_port}
+    bind 0.0.0.0:{listen_port}
+    default_backend svn_{label}_{listen_port}_origin
+
+backend svn_{label}_{listen_port}_origin
+    server origin {host}:{target_port} check inter 10s fall 3 rise 2 resolvers public_dns resolve-prefer ipv4 init-addr last,libc,none
 """
         )
     return "".join(sections).strip() + "\n"
