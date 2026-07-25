@@ -131,6 +131,10 @@ async def startup() -> None:
             await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN device_limit_last_warning_at DATETIME"))
         except SQLAlchemyError:
             pass
+        try:
+            await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN address_rewrites_json VARCHAR"))
+        except SQLAlchemyError:
+            pass
     await _collapse_legacy_device_rows()
     settings.subscription_cache_dir.mkdir(parents=True, exist_ok=True)
     _upstream_client = httpx.AsyncClient(
@@ -331,6 +335,7 @@ async def admin_create_subscription(
     channel_handle: str = Form(default=""),
     show_config_preview: str | None = Form(default=None),
     info_proxies_enabled: str | None = Form(default=None),
+    address_rewrites: str = Form(default=""),
     volume_gb: int = Form(default=0),
     category_key: str = Form(default="manual"),
     _: str = Depends(_require_admin),
@@ -357,6 +362,7 @@ async def admin_create_subscription(
         config.channel_handle = channel_handle.strip() or None
         config.show_config_preview = show_config_preview == "on"
         config.info_proxies_enabled = info_proxies_enabled == "on"
+        config.address_rewrites_json = _serialize_address_rewrites(address_rewrites)
         await session.commit()
     public_url = f"{settings.public_base_url}/token/{quote(token, safe='')}"
     return await _render_admin(load_panel_settings(), notice=f"لینک اختصاصی ساخته شد: {public_url}")
@@ -462,6 +468,7 @@ async def admin_update_subscription_display(
     channel_handle: str = Form(default=""),
     show_config_preview: str | None = Form(default=None),
     info_proxies_enabled: str | None = Form(default=None),
+    address_rewrites: str = Form(default=""),
     _: str = Depends(_require_admin),
 ) -> RedirectResponse:
     async with async_session() as session:
@@ -473,6 +480,7 @@ async def admin_update_subscription_display(
             config.channel_handle = channel_handle.strip() or None
             config.show_config_preview = show_config_preview == "on"
             config.info_proxies_enabled = info_proxies_enabled == "on"
+            config.address_rewrites_json = _serialize_address_rewrites(address_rewrites)
             await session.commit()
     return RedirectResponse("/admin", status_code=303)
 
@@ -1002,13 +1010,20 @@ def _decode_subscription_text(body: bytes) -> tuple[str, bool]:
 
 def _subscription_body_with_info_proxies(config: Config, upstream: dict) -> bytes:
     if not bool(config.info_proxies_enabled):
-        return _subscription_body_without_branded_suffixes(upstream["body"])
+        return _subscription_body_without_branded_suffixes(
+            upstream["body"],
+            _config_address_rewrites(config),
+        )
     text, was_base64 = _decode_subscription_text(upstream["body"])
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     lines = [_clean_config_line_display_name(line) for line in lines]
+    lines = [_rewrite_config_line_address(line, _config_address_rewrites(config)) for line in lines]
     info_lines = _info_proxy_lines(config, upstream)
     if not info_lines:
-        return _subscription_body_without_branded_suffixes(upstream["body"])
+        return _subscription_body_without_branded_suffixes(
+            upstream["body"],
+            _config_address_rewrites(config),
+        )
     # Put status entries first so apps show them at the top of the profile.
     content = "\n".join([*info_lines, *lines]).strip() + "\n"
     if was_base64:
@@ -1086,18 +1101,80 @@ def _clean_config_line_display_name(line: str) -> str:
     return f"{base}#{quote(cleaned, safe='')}"
 
 
-def _subscription_body_without_branded_suffixes(body: bytes) -> bytes:
+def _subscription_body_without_branded_suffixes(
+    body: bytes,
+    address_rewrites: dict[str, str] | None = None,
+) -> bytes:
     text, was_base64 = _decode_subscription_text(body)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return body
     cleaned_lines = [_clean_config_line_display_name(line) for line in lines]
+    if address_rewrites:
+        cleaned_lines = [_rewrite_config_line_address(line, address_rewrites) for line in cleaned_lines]
     if cleaned_lines == lines:
         return body
     content = "\n".join(cleaned_lines).strip() + "\n"
     if was_base64:
         return base64.b64encode(content.encode("utf-8"))
     return content.encode("utf-8")
+
+
+def _serialize_address_rewrites(value: str) -> str | None:
+    rules: dict[str, str] = {}
+    for raw_line in (value or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        source, target = (part.strip().lower().rstrip(".") for part in line.split("=", 1))
+        if _valid_rewrite_host(source) and _valid_rewrite_host(target) and source != target:
+            rules[source] = target
+    if not rules:
+        return None
+    return json.dumps(rules, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def _config_address_rewrites(config: Config) -> dict[str, str]:
+    raw = getattr(config, "address_rewrites_json", None)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        str(source).strip().lower().rstrip("."): str(target).strip().lower().rstrip(".")
+        for source, target in data.items()
+        if _valid_rewrite_host(str(source)) and _valid_rewrite_host(str(target))
+    }
+
+
+def _display_address_rewrites(config: Config) -> str:
+    return "\n".join(f"{source}={target}" for source, target in _config_address_rewrites(config).items())
+
+
+def _valid_rewrite_host(value: str) -> bool:
+    host = (value or "").strip().lower().rstrip(".")
+    return bool(host) and len(host) <= 253 and bool(re.fullmatch(r"[a-z0-9.-]+", host))
+
+
+def _rewrite_config_line_address(line: str, rules: dict[str, str]) -> str:
+    if not rules:
+        return line
+    match = re.match(
+        r"^(?P<prefix>[a-z][a-z0-9+.-]*://[^@\s]+@)(?P<host>\[[^\]]+\]|[^:/?#\s]+)(?P<suffix>:\d+.*)$",
+        line,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return line
+    source = match.group("host").strip("[]").lower().rstrip(".")
+    target = rules.get(source)
+    if not target:
+        return line
+    return f"{match.group('prefix')}{target}{match.group('suffix')}"
 
 
 def _parse_subscription_userinfo(value: str) -> dict[str, int]:
@@ -1585,6 +1662,7 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
         preview_checked = "checked" if _config_bool(config.show_config_preview, panel.show_config_preview) else ""
         info_checked = "checked" if bool(config.info_proxies_enabled) else ""
         channel_value = html.escape(config.channel_handle or "")
+        address_rewrites_value = html.escape(_display_address_rewrites(config))
         device_count = device_counts.get(config.public_sub_token, 0)
         search_text = " ".join(
             [
@@ -1596,7 +1674,7 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
             ]
         )
         volume_text = "نامحدود" if not config.volume_gb else f"{config.volume_gb} GB"
-        return f"""<article class="sub-card" data-search="{html.escape(search_text.casefold(), quote=True)}"><div class="sub-card-head"><div><strong>{html.escape(config.service_name or "-")}</strong><span>{html.escape(config.profile_title or "نام اختصاصی ندارد")}</span></div><b>{html.escape(volume_text)}</b></div><div class="link-panel"><div><span>لینک ساخته‌شده</span><a class="ltr break" href="{public_url}" target="_blank">{html.escape(public_url)}</a></div><button type="button" class="copy-admin" onclick="copyAdminLink({html.escape(json.dumps(public_url), quote=True)})">کپی لینک</button></div><div class="sub-grid"><form class="inline-form" method="post" action="/admin/subscriptions/{config.id}/device-limit"><label>محدودیت کاربر/دستگاه<input name="device_limit" type="number" min="0" value="{config.device_limit if config.device_limit is not None else 0}" title="0 یعنی نامحدود"></label><button>ثبت</button></form><form class="stack-form" method="post" action="/admin/subscriptions/{config.id}/display"><div class="toggle-row"><label class="tiny-toggle"><input name="show_header" type="checkbox" {header_checked}> هدر</label><label class="tiny-toggle"><input name="show_config_preview" type="checkbox" {preview_checked}> کانفیگ‌ها</label><label class="tiny-toggle"><input name="info_proxies_enabled" type="checkbox" {info_checked}> کانفیگ‌های اطلاعاتی</label></div><label>نام نمایشی داخل برنامه‌ها<input name="profile_title" value="{html.escape(config.profile_title or '')}" placeholder="مثلا PhantomHubs VIP"></label><label>Username پنل برای کانفیگ آدمک<input name="panel_username" value="{html.escape(config.panel_username or '')}" placeholder="مثلا PhantomExpress10GB-VIP1"></label><label>کانال اختصاصی<input name="channel_handle" value="{channel_value}" placeholder="@SupportChannel"></label><button>ذخیره نمایش</button></form></div><div class="device-panel"><span>دستگاه‌های ثبت‌شده: <b>{device_count}</b></span><form method="post" action="/admin/subscriptions/{config.id}/devices/reset"><button type="submit">ریست شمارش</button></form><form method="post" action="/admin/subscriptions/{config.id}/revoke" onsubmit="return confirm('لینک قبلی باطل و لینک جدید ساخته شود؟')"><button type="submit" class="danger">Revoke لینک</button></form></div><details><summary>لینک اصلی</summary><p class="ltr break">{html.escape(config.sub_link)}</p><form class="replace-form" method="post" action="/admin/subscriptions/{config.id}/upstream" onsubmit="return confirm('لینک اصلی این اشتراک جایگزین شود؟ لینک ساخته‌شده و توکن فعلی حفظ می‌شود.')"><label>جایگزینی لینک اصلی<input name="upstream_url" type="url" required dir="ltr" value="{html.escape(config.sub_link, quote=True)}"></label><button type="submit">جایگزینی لینک اصلی</button></form></details><form class="delete-form" method="post" action="/admin/subscriptions/{config.id}/delete"><button class="danger">حذف</button></form></article>"""
+        return f"""<article class="sub-card" data-search="{html.escape(search_text.casefold(), quote=True)}"><div class="sub-card-head"><div><strong>{html.escape(config.service_name or "-")}</strong><span>{html.escape(config.profile_title or "نام اختصاصی ندارد")}</span></div><b>{html.escape(volume_text)}</b></div><div class="link-panel"><div><span>لینک ساخته‌شده</span><a class="ltr break" href="{public_url}" target="_blank">{html.escape(public_url)}</a></div><button type="button" class="copy-admin" onclick="copyAdminLink({html.escape(json.dumps(public_url), quote=True)})">کپی لینک</button></div><div class="sub-grid"><form class="inline-form" method="post" action="/admin/subscriptions/{config.id}/device-limit"><label>محدودیت کاربر/دستگاه<input name="device_limit" type="number" min="0" value="{config.device_limit if config.device_limit is not None else 0}" title="0 یعنی نامحدود"></label><button>ثبت</button></form><form class="stack-form" method="post" action="/admin/subscriptions/{config.id}/display"><div class="toggle-row"><label class="tiny-toggle"><input name="show_header" type="checkbox" {header_checked}> هدر</label><label class="tiny-toggle"><input name="show_config_preview" type="checkbox" {preview_checked}> کانفیگ‌ها</label><label class="tiny-toggle"><input name="info_proxies_enabled" type="checkbox" {info_checked}> کانفیگ‌های اطلاعاتی</label></div><label>نام نمایشی داخل برنامه‌ها<input name="profile_title" value="{html.escape(config.profile_title or '')}" placeholder="مثلا PhantomHubs VIP"></label><label>Username پنل برای کانفیگ آدمک<input name="panel_username" value="{html.escape(config.panel_username or '')}" placeholder="مثلا PhantomExpress10GB-VIP1"></label><label>کانال اختصاصی<input name="channel_handle" value="{channel_value}" placeholder="@SupportChannel"></label><label>بازنویسی آدرس کانفیگ<textarea class="ltr" name="address_rewrites" placeholder="es.sv.temas-bor.ir=svn-es.api.phantomhubs.shop">{address_rewrites_value}</textarea><span>هر خط: آدرس فعلی=آدرس جدید؛ پورت و تنظیمات اتصال دست‌نخورده می‌مانند.</span></label><button>ذخیره نمایش</button></form></div><div class="device-panel"><span>دستگاه‌های ثبت‌شده: <b>{device_count}</b></span><form method="post" action="/admin/subscriptions/{config.id}/devices/reset"><button type="submit">ریست شمارش</button></form><form method="post" action="/admin/subscriptions/{config.id}/revoke" onsubmit="return confirm('لینک قبلی باطل و لینک جدید ساخته شود؟')"><button type="submit" class="danger">Revoke لینک</button></form></div><details><summary>لینک اصلی</summary><p class="ltr break">{html.escape(config.sub_link)}</p><form class="replace-form" method="post" action="/admin/subscriptions/{config.id}/upstream" onsubmit="return confirm('لینک اصلی این اشتراک جایگزین شود؟ لینک ساخته‌شده و توکن فعلی حفظ می‌شود.')"><label>جایگزینی لینک اصلی<input name="upstream_url" type="url" required dir="ltr" value="{html.escape(config.sub_link, quote=True)}"></label><button type="submit">جایگزینی لینک اصلی</button></form></details><form class="delete-form" method="post" action="/admin/subscriptions/{config.id}/delete"><button class="danger">حذف</button></form></article>"""
 
     rows = "".join(row(config) for config in configs) or "<div class='empty-admin'>هنوز لینکی ثبت نشده است.</div>"
     flash = f"<div class='notice'>{html.escape(notice)}</div>" if notice else f"<div class='error'>{html.escape(error)}</div>" if error else ""
@@ -1609,7 +1687,7 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
     }
     return f"""<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>مدیریت پنل اشتراک</title><link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet"><style>
 *{{box-sizing:border-box;letter-spacing:0}}body{{margin:0;background:#f4f7fb;color:#172033;font-family:Vazirmatn,Tahoma,sans-serif}}main{{max-width:1100px;margin:auto;padding:24px 16px 50px}}header{{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}}h1{{font-size:25px;margin:0}}h2{{font-size:18px;margin:0 0 16px}}.card{{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:20px;margin-bottom:16px;box-shadow:0 8px 24px rgba(15,23,42,.05)}}.grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}}label{{display:grid;gap:6px;color:#64748b;font-size:13px}}input,textarea{{border:1px solid #cbd5e1;border-radius:8px;padding:11px;font:inherit;color:#172033;min-width:0}}textarea{{min-height:88px;resize:vertical}}button{{border:0;border-radius:8px;background:{panel.primary_color};color:white;padding:11px 16px;font:inherit;font-weight:700;cursor:pointer}}.danger{{background:#dc2626;padding:7px 10px}}.wide{{grid-column:1/-1}}.notice,.error{{padding:11px;border-radius:8px;margin-bottom:16px;overflow-wrap:anywhere}}.notice{{background:#dcfce7;color:#166534}}.error{{background:#fee2e2;color:#991b1b}}a{{color:{panel.primary_color};font-weight:700}}.actions{{display:flex;justify-content:flex-end;margin-top:14px}}.toggle,.tiny-toggle{{display:flex;align-items:center;gap:8px}}.template-settings{{overflow:hidden}}.template-summary{{display:flex;align-items:center;justify-content:space-between;gap:12px;list-style:none;color:#172033}}.template-summary::-webkit-details-marker{{display:none}}.template-title{{display:grid;gap:4px}}.template-title h2{{margin:0}}.template-title span{{color:#64748b;font-size:13px}}.summary-pill{{background:#eef2ff;color:{panel.primary_color};border:1px solid #c7d2fe;border-radius:8px;padding:8px 12px;font-weight:800;white-space:nowrap}}.template-settings[open] .summary-pill{{background:#f1f5f9;color:#334155;border-color:#cbd5e1}}.template-settings form{{margin-top:18px;padding-top:18px;border-top:1px solid #e2e8f0}}.sub-tools{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end;margin-bottom:14px}}.sub-tools label{{font-size:13px}}.search-count{{color:#64748b;font-size:13px;padding:11px 0;white-space:nowrap}}.sub-list{{display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:14px;align-items:start}}.sub-card{{border:1px solid #e2e8f0;border-radius:8px;padding:14px;background:#f8fafc;display:grid;gap:12px;min-width:0}}.sub-card[hidden]{{display:none}}.sub-card-head{{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding-bottom:10px;border-bottom:1px solid #e2e8f0}}.sub-card-head div{{display:grid;gap:4px;min-width:0}}.sub-card-head strong{{overflow-wrap:anywhere}}.sub-card-head span{{color:#64748b;font-size:12px;overflow-wrap:anywhere}}.sub-card-head b{{white-space:nowrap;color:{panel.primary_color};background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:6px 9px}}.link-panel{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:10px}}.link-panel span{{display:block;color:#64748b;font-size:12px;margin-bottom:4px}}.sub-grid{{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.25fr);gap:10px}}.inline-form,.stack-form{{display:grid;gap:8px;align-content:start;background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:10px}}.inline-form{{grid-template-columns:minmax(0,1fr) auto;align-items:end}}.inline-form button,.stack-form button,.copy-admin{{padding:8px 11px}}.copy-admin{{background:#334155;white-space:nowrap}}.toggle-row{{display:flex;flex-wrap:wrap;gap:12px}}.break{{overflow-wrap:anywhere;white-space:normal}}.ltr{{direction:ltr;text-align:left}}details{{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:8px}}summary{{cursor:pointer;color:#64748b}}.delete-form{{display:flex;justify-content:flex-end}}.empty-admin{{padding:16px;color:#64748b;text-align:center}}#empty-search{{display:none}}@media(max-width:700px){{main{{padding:18px 10px 40px}}header{{display:grid;gap:10px}}.grid,.sub-grid,.inline-form,.sub-tools,.link-panel{{grid-template-columns:1fr}}.wide{{grid-column:auto}}.sub-list{{grid-template-columns:1fr}}.sub-card-head{{display:grid}}.template-summary{{align-items:flex-start;display:grid}}.summary-pill{{justify-self:start}}}}</style></head><body><main><header><div><h1>مدیریت Phantom Subscription</h1><span>ساخته‌شده بر پایه ظاهر marzban-template</span></div><a href="{settings.public_base_url}/health">وضعیت سرویس</a></header>{flash}
-<section class="card"><h2>تبدیل دستی لینک ساب</h2><form method="post" action="/admin/subscriptions"><div class="grid"><label class="wide">لینک اصلی سابسکریپشن<input name="upstream_url" type="url" required placeholder="https://example.com/token/..."></label><label>توکن دلخواه، اختیاری<input name="token" placeholder="اگر خالی باشد خودکار ساخته می‌شود"></label><label>نام سرویس<input name="service_name"></label><label>Username پنل برای کانفیگ آدمک<input name="panel_username" placeholder="اگر خالی باشد از نام سرویس استفاده می‌شود"></label><label>نام نمایشی اختصاصی داخل برنامه‌ها<input name="profile_title" placeholder="فقط برای همین لینک"></label><label>محدودیت کاربر/دستگاه همین لینک<input name="device_limit" type="number" min="0" value="0" placeholder="0 یعنی نامحدود"></label><label>کانال/پشتیبانی اختصاصی<input name="channel_handle" placeholder="@PhantomHubsSupport"></label><label>حجم گیگ<input name="volume_gb" type="number" min="0" value="0"></label><label>دسته‌بندی<input name="category_key" value="manual"></label><label class="toggle"><input name="show_header" type="checkbox" checked> نمایش هدر سایت</label><label class="toggle"><input name="show_config_preview" type="checkbox" checked> نمایش کانفیگ‌های اشتراک</label><label class="toggle"><input name="info_proxies_enabled" type="checkbox"> افزودن کانفیگ‌های اطلاعاتی</label></div><div class="actions"><button>ساخت لینک اختصاصی</button></div></form></section>
+<section class="card"><h2>تبدیل دستی لینک ساب</h2><form method="post" action="/admin/subscriptions"><div class="grid"><label class="wide">لینک اصلی سابسکریپشن<input name="upstream_url" type="url" required placeholder="https://example.com/token/..."></label><label>توکن دلخواه، اختیاری<input name="token" placeholder="اگر خالی باشد خودکار ساخته می‌شود"></label><label>نام سرویس<input name="service_name"></label><label>Username پنل برای کانفیگ آدمک<input name="panel_username" placeholder="اگر خالی باشد از نام سرویس استفاده می‌شود"></label><label>نام نمایشی اختصاصی داخل برنامه‌ها<input name="profile_title" placeholder="فقط برای همین لینک"></label><label>محدودیت کاربر/دستگاه همین لینک<input name="device_limit" type="number" min="0" value="0" placeholder="0 یعنی نامحدود"></label><label>کانال/پشتیبانی اختصاصی<input name="channel_handle" placeholder="@PhantomHubsSupport"></label><label>حجم گیگ<input name="volume_gb" type="number" min="0" value="0"></label><label>دسته‌بندی<input name="category_key" value="manual"></label><label class="wide">بازنویسی آدرس کانفیگ<textarea class="ltr" name="address_rewrites" placeholder="es.sv.temas-bor.ir=svn-es.api.phantomhubs.shop"></textarea></label><label class="toggle"><input name="show_header" type="checkbox" checked> نمایش هدر سایت</label><label class="toggle"><input name="show_config_preview" type="checkbox" checked> نمایش کانفیگ‌های اشتراک</label><label class="toggle"><input name="info_proxies_enabled" type="checkbox"> افزودن کانفیگ‌های اطلاعاتی</label></div><div class="actions"><button>ساخت لینک اختصاصی</button></div></form></section>
 <details class="card template-settings"><summary class="template-summary"><div class="template-title"><h2>تنظیمات کامل قالب</h2><span>رنگ‌ها، متن‌ها، دکمه‌ها و نمایش بخش‌های صفحه اشتراک</span></div><span class="summary-pill">باز/بستن تنظیمات</span></summary><form method="post" action="/admin/settings"><div class="grid">
 <label>نام برند<input name="brand_name" value="{html.escape(panel.brand_name)}"></label><label>آیدی کانال<input name="channel_handle" value="{html.escape(panel.channel_handle)}"></label>
 <label class="wide">نام نمایشی سابسکریپشن داخل برنامه‌ها<input name="subscription_profile_title" value="{html.escape(panel.subscription_profile_title)}" placeholder="خالی باشد، نام لینک اصلی یا نام سرویس استفاده می‌شود"></label>

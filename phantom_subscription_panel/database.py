@@ -31,6 +31,7 @@ class Config(Base):
     channel_handle = Column(String, nullable=True)
     show_config_preview = Column(Boolean, nullable=True)
     info_proxies_enabled = Column(Boolean, nullable=True)
+    address_rewrites_json = Column(String, nullable=True)
 
 
 class SubscriptionDevice(Base):

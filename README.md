@@ -9,6 +9,7 @@ the original Marzban subscription URL, and serves:
 - raw subscription content for VPN clients
 - a branded browser page for normal web visits
 - a full `/admin` page for visual settings, manual URL conversion, and link management
+- optional per-subscription server-address rewrites for isolated relay tests
 
 The public DNS record should be proxied through Cloudflare. For VPN subscription
 paths, configure a Cache Rule matching `/token/*` and `/sub/*` with cache bypass,
@@ -58,6 +59,10 @@ nginx -t
 systemctl reload nginx
 certbot --nginx -d api.phantomhubs.shop
 ```
+
+Optional TCP relay units are kept under `deploy/systemd/`. A relay hostname must
+use a DNS-only record because the regular Cloudflare HTTP proxy does not forward
+arbitrary Reality/TCP ports.
 
 Admin page:
 
