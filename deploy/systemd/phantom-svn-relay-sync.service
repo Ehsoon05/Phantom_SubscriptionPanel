@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh Phantom SVN HAProxy country relays
+After=network-online.target haproxy.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/phantom-subscription-panel
+ExecStart=/opt/phantom-subscription-panel/venv/bin/python /opt/phantom-subscription-panel/scripts/sync_svn_haproxy.py --db /opt/phantom-subscription-panel/panel.db --output /etc/haproxy/haproxy.cfg --reload
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/haproxy

@@ -60,14 +60,15 @@ systemctl reload nginx
 certbot --nginx -d api.phantomhubs.shop
 ```
 
-Optional TCP relay units are kept under `deploy/systemd/`. A relay hostname must
-use a DNS-only record because the regular Cloudflare HTTP proxy does not forward
-arbitrary Reality/TCP ports.
+SVN country Reality endpoints are served through HAProxy with dynamic DNS
+resolution. `phantom-svn-relay-sync.timer` refreshes the country host/port map
+from a live SVN subscription every five minutes and preserves the last-good
+configuration when the upstream is temporarily unavailable. Country hostnames
+use the two-letter prefix under the DNS-only `*.api.phantomhubs.shop` record.
 
-The SVN country relays use the `phantom-svn-country-relay@.socket` and
-`phantom-svn-country-relay@.service` templates. Enable one socket instance for
-each required country port. Country hostnames use the two-letter prefix under
-`*.api.phantomhubs.shop`, for example `es.api.phantomhubs.shop`.
+Direct Fastly WebSocket addresses from SVN are rewritten to the DNS-only
+`ws.api.phantomhubs.shop` CNAME. This keeps Fastly traffic off the relay server
+while allowing Fastly IP changes to propagate through DNS.
 
 Admin page:
 

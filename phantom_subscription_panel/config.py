@@ -33,6 +33,23 @@ class Settings:
     subscription_cache_ttl_seconds = int(os.getenv("SUBSCRIPTION_CACHE_TTL_SECONDS", "60"))
     device_limit_warning_bot_token = os.getenv("DEVICE_LIMIT_WARNING_BOT_TOKEN", "").strip()
     device_limit_warning_cooldown_seconds = int(os.getenv("DEVICE_LIMIT_WARNING_COOLDOWN_SECONDS", "21600"))
+    svn_country_source_suffix = os.getenv("SVN_COUNTRY_SOURCE_SUFFIX", "sv.temas-bor.ir").strip().lower().strip(".")
+    svn_upstream_host = os.getenv(
+        "SVN_UPSTREAM_HOST",
+        "sub.svnteam-max.com",
+    ).strip().lower().strip(".")
+    svn_relay_target_suffix = os.getenv(
+        "SVN_RELAY_TARGET_SUFFIX",
+        "api.phantomhubs.shop",
+    ).strip().lower().strip(".")
+    svn_ws_origin_host = os.getenv(
+        "SVN_WS_ORIGIN_HOST",
+        "bankmelat.global.ssl.fastly.net",
+    ).strip().lower().strip(".")
+    svn_ws_alias = os.getenv(
+        "SVN_WS_ALIAS",
+        "ws.api.phantomhubs.shop",
+    ).strip().lower().strip(".")
 
 
 settings = Settings()

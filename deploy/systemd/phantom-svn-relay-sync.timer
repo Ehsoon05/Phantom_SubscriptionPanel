@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically refresh Phantom SVN country relays
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Persistent=true
+Unit=phantom-svn-relay-sync.service
+
+[Install]
+WantedBy=timers.target

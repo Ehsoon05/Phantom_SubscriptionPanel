@@ -4,10 +4,14 @@ import base64
 import unittest
 
 from phantom_subscription_panel.app import (
+    _automatic_svn_country_rewrites,
     _rewrite_config_line_address,
+    _rewrite_svn_ws_address,
     _serialize_address_rewrites,
+    _subscription_body_with_info_proxies,
     _subscription_body_without_branded_suffixes,
 )
+from phantom_subscription_panel.database import Config
 
 
 class AddressRewriteTests(unittest.TestCase):
@@ -65,4 +69,62 @@ class AddressRewriteTests(unittest.TestCase):
         self.assertEqual(
             serialized,
             '{"es.sv.temas-bor.ir":"svn-es.api.phantomhubs.shop"}',
+        )
+
+    def test_country_rewrites_are_discovered_from_subscription_content(self) -> None:
+        body = base64.b64encode(
+            (
+                "vless://user@es.sv.temas-bor.ir:22009?security=reality\n"
+                "vless://user@de.sv.temas-bor.ir:22006?security=reality\n"
+            ).encode()
+        )
+
+        self.assertEqual(
+            _automatic_svn_country_rewrites(body),
+            {
+                "de.sv.temas-bor.ir": "de.api.phantomhubs.shop",
+                "es.sv.temas-bor.ir": "es.api.phantomhubs.shop",
+            },
+        )
+
+    def test_direct_fastly_ws_ip_uses_stable_alias(self) -> None:
+        source = (
+            "vless://user-id@151.101.193.54:80"
+            "?security=none&type=ws&path=&host=BankMelat.glObal.ssl.faStly.nEt.#Fastly"
+        )
+
+        rewritten = _rewrite_svn_ws_address(source)
+
+        self.assertEqual(
+            rewritten,
+            "vless://user-id@ws.api.phantomhubs.shop:80"
+            "?security=none&type=ws&path=&host=BankMelat.glObal.ssl.faStly.nEt.#Fastly",
+        )
+
+    def test_non_matching_ws_host_is_not_rewritten(self) -> None:
+        source = (
+            "vless://user-id@192.0.2.10:80"
+            "?security=none&type=ws&host=unrelated.example#Other"
+        )
+
+        self.assertEqual(_rewrite_svn_ws_address(source), source)
+
+    def test_svn_source_rewrites_ws_even_without_country_nodes(self) -> None:
+        source = (
+            "vless://user-id@151.101.193.54:80"
+            "?security=none&type=ws&host=bankmelat.global.ssl.fastly.net#Fastly\n"
+        )
+        config = Config(
+            sub_link="https://sub.svnteam-max.com:2053/sub/example",
+            info_proxies_enabled=False,
+        )
+
+        rewritten = _subscription_body_with_info_proxies(
+            config,
+            {"body": base64.b64encode(source.encode())},
+        )
+
+        self.assertIn(
+            "@ws.api.phantomhubs.shop:80",
+            base64.b64decode(rewritten).decode(),
         )

@@ -5,13 +5,14 @@ import base64
 import binascii
 import hashlib
 import html
+import ipaddress
 import json
 import re
 import secrets
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
 import qrcode
@@ -1009,20 +1010,31 @@ def _decode_subscription_text(body: bytes) -> tuple[str, bool]:
 
 
 def _subscription_body_with_info_proxies(config: Config, upstream: dict) -> bytes:
+    automatic_rewrites = _automatic_svn_country_rewrites(upstream["body"])
+    address_rewrites = {
+        **automatic_rewrites,
+        **_config_address_rewrites(config),
+    }
+    source_host = (urlparse(config.sub_link or "").hostname or "").lower().rstrip(".")
+    rewrite_svn_ws = bool(automatic_rewrites) or source_host == settings.svn_upstream_host
     if not bool(config.info_proxies_enabled):
         return _subscription_body_without_branded_suffixes(
             upstream["body"],
-            _config_address_rewrites(config),
+            address_rewrites,
+            rewrite_svn_ws=rewrite_svn_ws,
         )
     text, was_base64 = _decode_subscription_text(upstream["body"])
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     lines = [_clean_config_line_display_name(line) for line in lines]
-    lines = [_rewrite_config_line_address(line, _config_address_rewrites(config)) for line in lines]
+    lines = [_rewrite_config_line_address(line, address_rewrites) for line in lines]
+    if rewrite_svn_ws:
+        lines = [_rewrite_svn_ws_address(line) for line in lines]
     info_lines = _info_proxy_lines(config, upstream)
     if not info_lines:
         return _subscription_body_without_branded_suffixes(
             upstream["body"],
-            _config_address_rewrites(config),
+            address_rewrites,
+            rewrite_svn_ws=rewrite_svn_ws,
         )
     # Put status entries first so apps show them at the top of the profile.
     content = "\n".join([*info_lines, *lines]).strip() + "\n"
@@ -1104,6 +1116,8 @@ def _clean_config_line_display_name(line: str) -> str:
 def _subscription_body_without_branded_suffixes(
     body: bytes,
     address_rewrites: dict[str, str] | None = None,
+    *,
+    rewrite_svn_ws: bool = False,
 ) -> bytes:
     text, was_base64 = _decode_subscription_text(body)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -1112,6 +1126,8 @@ def _subscription_body_without_branded_suffixes(
     cleaned_lines = [_clean_config_line_display_name(line) for line in lines]
     if address_rewrites:
         cleaned_lines = [_rewrite_config_line_address(line, address_rewrites) for line in cleaned_lines]
+    if rewrite_svn_ws:
+        cleaned_lines = [_rewrite_svn_ws_address(line) for line in cleaned_lines]
     if cleaned_lines == lines:
         return body
     content = "\n".join(cleaned_lines).strip() + "\n"
@@ -1175,6 +1191,49 @@ def _rewrite_config_line_address(line: str, rules: dict[str, str]) -> str:
     if not target:
         return line
     return f"{match.group('prefix')}{target}{match.group('suffix')}"
+
+
+def _automatic_svn_country_rewrites(body: bytes) -> dict[str, str]:
+    source_suffix = settings.svn_country_source_suffix
+    target_suffix = settings.svn_relay_target_suffix
+    if not source_suffix or not target_suffix:
+        return {}
+    text, _ = _decode_subscription_text(body)
+    pattern = re.compile(
+        rf"@(?P<code>[a-z]{{2}})\.{re.escape(source_suffix)}:\d+",
+        flags=re.IGNORECASE,
+    )
+    codes = {match.group("code").lower() for match in pattern.finditer(text)}
+    return {
+        f"{code}.{source_suffix}": f"{code}.{target_suffix}"
+        for code in sorted(codes)
+    }
+
+
+def _rewrite_svn_ws_address(line: str) -> str:
+    alias = settings.svn_ws_alias
+    origin_host = settings.svn_ws_origin_host
+    if not alias or not origin_host:
+        return line
+    match = re.match(
+        r"^(?P<prefix>[a-z][a-z0-9+.-]*://[^@\s]+@)(?P<host>\[[^\]]+\]|[^:/?#\s]+)(?P<suffix>:\d+.*)$",
+        line,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return line
+    try:
+        source_address = ipaddress.ip_address(match.group("host").strip("[]"))
+    except ValueError:
+        return line
+    if source_address.version != 4:
+        return line
+    query = parse_qs(urlparse(line).query)
+    transport = str((query.get("type") or [""])[0]).strip().lower()
+    ws_host = str((query.get("host") or [""])[0]).strip().lower().strip(".")
+    if transport != "ws" or ws_host != origin_host:
+        return line
+    return f"{match.group('prefix')}{alias}{match.group('suffix')}"
 
 
 def _parse_subscription_userinfo(value: str) -> dict[str, int]:
