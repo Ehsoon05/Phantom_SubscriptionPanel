@@ -5,6 +5,7 @@ import unittest
 
 from phantom_subscription_panel.app import (
     _automatic_svn_country_rewrites,
+    _rewritten_subscription_lines,
     _rewrite_config_line_address,
     _rewrite_svn_ws_address,
     _serialize_address_rewrites,
@@ -146,3 +147,22 @@ class AddressRewriteTests(unittest.TestCase):
             "@ws.api.phantomhubs.shop:80",
             base64.b64decode(rewritten).decode(),
         )
+
+    def test_web_preview_lines_use_the_same_svn_aliases(self) -> None:
+        source = (
+            "vless://user@es.sv.temas-bor.ir:22009?security=reality\n"
+            "vless://user@tun.temas-bor.ir:443?security=reality&type=xhttp\n"
+            "vless://user@151.101.193.54:80"
+            "?security=none&type=ws&host=bankmelat.global.ssl.fastly.net\n"
+        )
+        config = Config(sub_link="https://sub.svnteam-max.com/sub/example")
+        upstream = {
+            "body": base64.b64encode(source.encode()),
+            "lines": source.splitlines(),
+        }
+
+        lines = _rewritten_subscription_lines(config, upstream)
+
+        self.assertIn("@es.api.phantomhubs.shop:22009", lines[0])
+        self.assertIn("@tun.api.phantomhubs.shop:443", lines[1])
+        self.assertIn("@ws.api.phantomhubs.shop:80", lines[2])

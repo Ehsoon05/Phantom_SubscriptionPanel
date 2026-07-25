@@ -1010,13 +1010,7 @@ def _decode_subscription_text(body: bytes) -> tuple[str, bool]:
 
 
 def _subscription_body_with_info_proxies(config: Config, upstream: dict) -> bytes:
-    automatic_rewrites = _automatic_svn_country_rewrites(upstream["body"])
-    address_rewrites = {
-        **automatic_rewrites,
-        **_config_address_rewrites(config),
-    }
-    source_host = (urlparse(config.sub_link or "").hostname or "").lower().rstrip(".")
-    rewrite_svn_ws = bool(automatic_rewrites) or source_host == settings.svn_upstream_host
+    address_rewrites, rewrite_svn_ws = _subscription_rewrite_context(config, upstream["body"])
     if not bool(config.info_proxies_enabled):
         return _subscription_body_without_branded_suffixes(
             upstream["body"],
@@ -1041,6 +1035,29 @@ def _subscription_body_with_info_proxies(config: Config, upstream: dict) -> byte
     if was_base64:
         return base64.b64encode(content.encode("utf-8"))
     return content.encode("utf-8")
+
+
+def _subscription_rewrite_context(config: Config, body: bytes) -> tuple[dict[str, str], bool]:
+    automatic_rewrites = _automatic_svn_country_rewrites(body)
+    source_host = (urlparse(config.sub_link or "").hostname or "").lower().rstrip(".")
+    return (
+        {
+            **automatic_rewrites,
+            **_config_address_rewrites(config),
+        },
+        bool(automatic_rewrites) or source_host == settings.svn_upstream_host,
+    )
+
+
+def _rewritten_subscription_lines(config: Config, upstream: dict) -> list[str]:
+    address_rewrites, rewrite_svn_ws = _subscription_rewrite_context(config, upstream["body"])
+    lines = [
+        _rewrite_config_line_address(line, address_rewrites)
+        for line in upstream.get("lines", [])
+    ]
+    if rewrite_svn_ws:
+        lines = [_rewrite_svn_ws_address(line) for line in lines]
+    return lines
 
 
 def _info_proxy_lines(config: Config, upstream: dict) -> list[str]:
@@ -1648,7 +1665,7 @@ def _render_subscription_page(config: Config, upstream: dict, web_title: str = "
     expire_text = datetime.fromtimestamp(expire, timezone.utc).strftime("%Y-%m-%d") if expire else "نامحدود"
     public_url = f"{settings.public_base_url}/token/{quote(config.public_sub_token, safe='')}"
     config_rows = ""
-    for index, line in enumerate(upstream["lines"][:20], 1):
+    for index, line in enumerate(_rewritten_subscription_lines(config, upstream)[:20], 1):
         copy_button = (
             f"<button class='mini-btn' style='background:{panel.config_copy_button_color}' onclick='copyText({html.escape(json.dumps(line), quote=True)});event.stopPropagation()'>{html.escape(panel.config_copy_button_text)}</button>"
             if panel.show_config_copy else ""
