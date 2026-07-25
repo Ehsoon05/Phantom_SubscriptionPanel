@@ -140,6 +140,8 @@ defaults
     timeout client 1h
     timeout server 1h
     timeout tunnel 1h
+    timeout client-fin 30s
+    timeout server-fin 30s
 
 resolvers public_dns
     nameserver cloudflare 1.1.1.1:53
