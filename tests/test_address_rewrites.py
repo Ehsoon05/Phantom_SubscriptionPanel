@@ -87,6 +87,24 @@ class AddressRewriteTests(unittest.TestCase):
             },
         )
 
+    def test_direct_svn_hosts_use_dns_only_aliases(self) -> None:
+        body = base64.b64encode(
+            (
+                "vless://user@tun.temas-bor.ir:443?security=reality&type=xhttp\n"
+                "trojan://user@WHITE-MTP.jorzel.ir:19302?security=reality&type=xhttp\n"
+                "trojan://user@white-mt.jorzel.ir:19302?security=reality&type=xhttp\n"
+            ).encode()
+        )
+
+        self.assertEqual(
+            _automatic_svn_country_rewrites(body),
+            {
+                "tun.temas-bor.ir": "tun.api.phantomhubs.shop",
+                "white-mt.jorzel.ir": "white-mt.api.phantomhubs.shop",
+                "white-mtp.jorzel.ir": "white-mtp.api.phantomhubs.shop",
+            },
+        )
+
     def test_direct_fastly_ws_ip_uses_stable_alias(self) -> None:
         source = (
             "vless://user-id@151.101.193.54:80"

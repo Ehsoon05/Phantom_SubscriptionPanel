@@ -42,6 +42,16 @@ class Settings:
         "SVN_RELAY_TARGET_SUFFIX",
         "api.phantomhubs.shop",
     ).strip().lower().strip(".")
+    svn_direct_host_rewrites = os.getenv(
+        "SVN_DIRECT_HOST_REWRITES",
+        "\n".join(
+            (
+                "tun.temas-bor.ir=tun.api.phantomhubs.shop",
+                "white-mt.jorzel.ir=white-mt.api.phantomhubs.shop",
+                "white-mtp.jorzel.ir=white-mtp.api.phantomhubs.shop",
+            )
+        ),
+    ).strip()
     svn_ws_origin_host = os.getenv(
         "SVN_WS_ORIGIN_HOST",
         "bankmelat.global.ssl.fastly.net",

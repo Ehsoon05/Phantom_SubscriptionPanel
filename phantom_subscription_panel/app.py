@@ -1196,18 +1196,29 @@ def _rewrite_config_line_address(line: str, rules: dict[str, str]) -> str:
 def _automatic_svn_country_rewrites(body: bytes) -> dict[str, str]:
     source_suffix = settings.svn_country_source_suffix
     target_suffix = settings.svn_relay_target_suffix
-    if not source_suffix or not target_suffix:
-        return {}
     text, _ = _decode_subscription_text(body)
-    pattern = re.compile(
-        rf"@(?P<code>[a-z]{{2}})\.{re.escape(source_suffix)}:\d+",
-        flags=re.IGNORECASE,
-    )
-    codes = {match.group("code").lower() for match in pattern.finditer(text)}
-    return {
-        f"{code}.{source_suffix}": f"{code}.{target_suffix}"
-        for code in sorted(codes)
-    }
+    rules: dict[str, str] = {}
+    if source_suffix and target_suffix:
+        pattern = re.compile(
+            rf"@(?P<code>[a-z]{{2}})\.{re.escape(source_suffix)}:\d+",
+            flags=re.IGNORECASE,
+        )
+        codes = {match.group("code").lower() for match in pattern.finditer(text)}
+        rules.update(
+            {
+                f"{code}.{source_suffix}": f"{code}.{target_suffix}"
+                for code in sorted(codes)
+            }
+        )
+    for raw_rule in re.split(r"[\n,]+", settings.svn_direct_host_rewrites):
+        if "=" not in raw_rule:
+            continue
+        source, target = (part.strip().lower().rstrip(".") for part in raw_rule.split("=", 1))
+        if not _valid_rewrite_host(source) or not _valid_rewrite_host(target):
+            continue
+        if re.search(rf"@{re.escape(source)}:\d+", text, flags=re.IGNORECASE):
+            rules[source] = target
+    return rules
 
 
 def _rewrite_svn_ws_address(line: str) -> str:

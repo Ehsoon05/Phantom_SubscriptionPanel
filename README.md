@@ -70,6 +70,11 @@ Direct Fastly WebSocket addresses from SVN are rewritten to the DNS-only
 `ws.api.phantomhubs.shop` CNAME. This keeps Fastly traffic off the relay server
 while allowing Fastly IP changes to propagate through DNS.
 
+Other domain-based SVN endpoints use explicit DNS-only CNAME aliases configured
+through `SVN_DIRECT_HOST_REWRITES`. The default aliases cover `tun.temas-bor.ir`
+and both `white-mt.jorzel.ir` variants without routing their traffic through the
+subscription server.
+
 Admin page:
 
 ```text
