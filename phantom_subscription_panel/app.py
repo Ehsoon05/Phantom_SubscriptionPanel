@@ -65,6 +65,7 @@ class ConfigSyncPayload(BaseModel):
     is_sold: bool = False
     service_name: str | None = None
     panel_username: str | None = None
+    profile_title: str | None = None
     telegram_user_id: int | None = None
     device_limit: int | None = None
     show_config_preview: bool | None = None
@@ -500,6 +501,8 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
         config.category_key = payload.category_key
         config.is_sold = payload.is_sold
         config.service_name = payload.service_name
+        if payload.profile_title is not None:
+            config.profile_title = payload.profile_title.strip() or None
         if payload.panel_username is not None:
             config.panel_username = payload.panel_username.strip() or None
         if payload.telegram_user_id is not None:
