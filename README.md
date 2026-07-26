@@ -64,16 +64,17 @@ SVN country Reality endpoints are served through HAProxy with dynamic DNS
 resolution. `phantom-svn-relay-sync.timer` refreshes the country host/port map
 from a live SVN subscription every five minutes and preserves the last-good
 configuration when the upstream is temporarily unavailable. Country hostnames
-use the two-letter prefix under the DNS-only `*.api.phantomhubs.shop` record.
+use the two-letter prefix under the DNS-only `*.api.bahrevari01.shop` record.
 
 Direct Fastly WebSocket addresses from SVN are rewritten to the DNS-only
-`ws.api.phantomhubs.shop` CNAME. This keeps Fastly traffic off the relay server
-while allowing Fastly IP changes to propagate through DNS.
+`wsr.api.bahrevari01.shop` relay. This keeps the public subscription domain
+separate from transport traffic while allowing Fastly IP changes to propagate
+through DNS.
 
-Other domain-based SVN endpoints use explicit DNS-only CNAME aliases configured
-through `SVN_DIRECT_HOST_REWRITES`. The default aliases cover `tun.temas-bor.ir`
-and both `white-mt.jorzel.ir` variants without routing their traffic through the
-subscription server.
+Other domain-based SVN endpoints are first rewritten through
+`SVN_DIRECT_HOST_REWRITES`, then selected blocked transports are routed through
+the tested HAProxy fallback listeners configured by
+`SVN_FALLBACK_ENDPOINT_REWRITES`.
 
 Admin page:
 

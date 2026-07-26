@@ -25,12 +25,12 @@ class AddressRewriteTests(unittest.TestCase):
 
         rewritten = _rewrite_config_line_address(
             source,
-            {"es.sv.temas-bor.ir": "svn-es.api.phantomhubs.shop"},
+            {"es.sv.temas-bor.ir": "svn-es.api.bahrevari01.shop"},
         )
 
         self.assertEqual(
             rewritten,
-            "vless://user-id@svn-es.api.phantomhubs.shop:22009"
+            "vless://user-id@svn-es.api.bahrevari01.shop:22009"
             "?security=reality&sni=login.yahoo.com#Spain",
         )
 
@@ -40,7 +40,7 @@ class AddressRewriteTests(unittest.TestCase):
         self.assertEqual(
             _rewrite_config_line_address(
                 source,
-                {"es.sv.temas-bor.ir": "svn-es.api.phantomhubs.shop"},
+                {"es.sv.temas-bor.ir": "svn-es.api.bahrevari01.shop"},
             ),
             source,
         )
@@ -54,23 +54,23 @@ class AddressRewriteTests(unittest.TestCase):
 
         rewritten = _subscription_body_without_branded_suffixes(
             body,
-            {"es.sv.temas-bor.ir": "svn-es.api.phantomhubs.shop"},
+            {"es.sv.temas-bor.ir": "svn-es.api.bahrevari01.shop"},
         )
 
         decoded = base64.b64decode(rewritten).decode()
-        self.assertIn("@svn-es.api.phantomhubs.shop:22009", decoded)
+        self.assertIn("@svn-es.api.bahrevari01.shop:22009", decoded)
         self.assertIn("sni=login.yahoo.com", decoded)
 
     def test_rule_serialization_ignores_invalid_lines(self) -> None:
         serialized = _serialize_address_rewrites(
-            "es.sv.temas-bor.ir=svn-es.api.phantomhubs.shop\n"
+            "es.sv.temas-bor.ir=svn-es.api.bahrevari01.shop\n"
             "this is invalid\n"
             "# disabled.example=target.example\n"
         )
 
         self.assertEqual(
             serialized,
-            '{"es.sv.temas-bor.ir":"svn-es.api.phantomhubs.shop"}',
+            '{"es.sv.temas-bor.ir":"svn-es.api.bahrevari01.shop"}',
         )
 
     def test_country_rewrites_are_discovered_from_subscription_content(self) -> None:
@@ -84,8 +84,8 @@ class AddressRewriteTests(unittest.TestCase):
         self.assertEqual(
             _automatic_svn_country_rewrites(body),
             {
-                "de.sv.temas-bor.ir": "de.api.phantomhubs.shop",
-                "es.sv.temas-bor.ir": "es.api.phantomhubs.shop",
+                "de.sv.temas-bor.ir": "de.api.bahrevari01.shop",
+                "es.sv.temas-bor.ir": "es.api.bahrevari01.shop",
             },
         )
 
@@ -101,9 +101,9 @@ class AddressRewriteTests(unittest.TestCase):
         self.assertEqual(
             _automatic_svn_country_rewrites(body),
             {
-                "tun.temas-bor.ir": "tun.api.phantomhubs.shop",
-                "white-mt.jorzel.ir": "white-mt.api.phantomhubs.shop",
-                "white-mtp.jorzel.ir": "white-mtp.api.phantomhubs.shop",
+                "tun.temas-bor.ir": "tun.api.bahrevari01.shop",
+                "white-mt.jorzel.ir": "white-mt.api.bahrevari01.shop",
+                "white-mtp.jorzel.ir": "white-mtp.api.bahrevari01.shop",
             },
         )
 
@@ -117,18 +117,18 @@ class AddressRewriteTests(unittest.TestCase):
 
         self.assertEqual(
             rewritten,
-            "vless://user-id@wsr.api.phantomhubs.shop:8080"
+            "vless://user-id@wsr.api.bahrevari01.shop:8080"
             "?security=none&type=ws&path=&host=BankMelat.glObal.ssl.faStly.nEt.#Fastly",
         )
 
     def test_svn_fallback_relays_rewrite_host_and_port(self) -> None:
         cases = {
-            "fi.api.phantomhubs.shop:22010": "fir.api.phantomhubs.shop:2053",
-            "tun.api.phantomhubs.shop:443": "dyr.api.phantomhubs.shop:8443",
-            "tun.api.phantomhubs.shop:1963": "xhr.api.phantomhubs.shop:2096",
-            "tun.api.phantomhubs.shop:2087": "fnr.api.phantomhubs.shop:8880",
-            "white-mt.api.phantomhubs.shop:19302": "mtd.api.phantomhubs.shop:2083",
-            "white-mtp.api.phantomhubs.shop:19302": "mtpd.api.phantomhubs.shop:2087",
+            "fi.api.bahrevari01.shop:22010": "fir.api.bahrevari01.shop:2053",
+            "tun.api.bahrevari01.shop:443": "dyr.api.bahrevari01.shop:8443",
+            "tun.api.bahrevari01.shop:1963": "xhr.api.bahrevari01.shop:2096",
+            "tun.api.bahrevari01.shop:2087": "fnr.api.bahrevari01.shop:8880",
+            "white-mt.api.bahrevari01.shop:19302": "mtd.api.bahrevari01.shop:2083",
+            "white-mtp.api.bahrevari01.shop:19302": "mtpd.api.bahrevari01.shop:2087",
         }
 
         for source, target in cases.items():
@@ -163,7 +163,7 @@ class AddressRewriteTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "@wsr.api.phantomhubs.shop:8080",
+            "@wsr.api.bahrevari01.shop:8080",
             base64.b64decode(rewritten).decode(),
         )
 
@@ -182,6 +182,6 @@ class AddressRewriteTests(unittest.TestCase):
 
         lines = _rewritten_subscription_lines(config, upstream)
 
-        self.assertIn("@es.api.phantomhubs.shop:22009", lines[0])
-        self.assertIn("@dyr.api.phantomhubs.shop:8443", lines[1])
-        self.assertIn("@wsr.api.phantomhubs.shop:8080", lines[2])
+        self.assertIn("@es.api.bahrevari01.shop:22009", lines[0])
+        self.assertIn("@dyr.api.bahrevari01.shop:8443", lines[1])
+        self.assertIn("@wsr.api.bahrevari01.shop:8080", lines[2])

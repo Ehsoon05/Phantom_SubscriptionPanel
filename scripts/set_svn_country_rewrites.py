@@ -34,7 +34,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Set per-subscription SVN country relay rewrites.")
     parser.add_argument("--db", type=Path, required=True)
     parser.add_argument("--token", required=True)
-    parser.add_argument("--target-suffix", default="api.phantomhubs.shop")
+    parser.add_argument("--target-suffix", default="api.bahrevari01.shop")
     args = parser.parse_args()
 
     target_suffix = args.target_suffix.strip().lower().strip(".")
