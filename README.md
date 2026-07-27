@@ -66,6 +66,14 @@ from a live SVN subscription every five minutes and preserves the last-good
 configuration when the upstream is temporarily unavailable. Country hostnames
 use the two-letter prefix under the DNS-only `*.api.bahrevari01.shop` record.
 
+For a dedicated relay host, install
+`scripts/install_haproxy_from_stdin.py` as a forced SSH command for a restricted
+deployment key. Then copy
+`deploy/systemd/phantom-svn-relay-sync-remote.conf.example` to a systemd drop-in,
+replace `RELAY_IP`, and restart the timer. Every successful sync will validate
+and deploy the current HAProxy configuration to the relay without giving the
+sync service an unrestricted remote shell.
+
 Direct Fastly WebSocket addresses from SVN are rewritten to the DNS-only
 `wsr.api.bahrevari01.shop` relay. This keeps the public subscription domain
 separate from transport traffic while allowing Fastly IP changes to propagate
