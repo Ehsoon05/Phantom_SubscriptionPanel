@@ -545,6 +545,26 @@ async def reset_config_devices(token: str, authorization: str | None = Header(de
     return "ok"
 
 
+@app.delete("/internal/configs/{token}", response_class=PlainTextResponse)
+async def delete_synced_config(
+    token: str,
+    authorization: str | None = Header(default=None),
+) -> str:
+    _require_sync_token(authorization)
+    upstream_url = ""
+    async with async_session() as session:
+        config = await _config_for_token_in_session(session, token)
+        if not config:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        upstream_url = config.sub_link
+        await _reset_devices_for_token(session, config.public_sub_token)
+        await session.delete(config)
+        await session.commit()
+    if upstream_url:
+        _clear_upstream_cache(upstream_url)
+    return "ok"
+
+
 @app.post("/internal/configs/{token}/revoke", response_class=JSONResponse)
 async def revoke_config_token(
     token: str,
