@@ -142,8 +142,16 @@ class DeviceLimitTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_distinct_explicit_hardware_id_hits_the_limit(self) -> None:
         config = await self._config(token="explicit", limit=1)
-        first = _request(user_agent="Hiddify/4.0", hwid="device-000001")
-        second = _request(user_agent="Hiddify/4.0", hwid="device-000002")
+        first = _request(
+            user_agent="Hiddify/4.0",
+            hwid="device-000001",
+            ip="192.0.2.1",
+        )
+        second = _request(
+            user_agent="Hiddify/4.0",
+            hwid="device-000002",
+            ip="198.51.100.2",
+        )
 
         with patch("phantom_subscription_panel.app.async_session", self.session_factory):
             await _enforce_device_limit(config, first)
@@ -151,6 +159,59 @@ class DeviceLimitTests(unittest.IsolatedAsyncioTestCase):
                 await _enforce_device_limit(config, second)
 
         self.assertEqual(raised.exception.status_code, 403)
+        async with self.session_factory() as session:
+            count = await session.scalar(select(func.count(SubscriptionDevice.id)))
+        self.assertEqual(count, 1)
+
+    async def test_same_client_can_upgrade_to_explicit_identifier(self) -> None:
+        config = await self._config(token="identity-upgrade", limit=1)
+        first = _request(
+            user_agent="v2box/5.3.4",
+            ip="192.0.2.1",
+        )
+        upgraded = _request(
+            user_agent="v2box/6.0.5",
+            hwid="device-000001",
+            ip="198.51.100.2",
+        )
+        upgraded_on_new_network = _request(
+            user_agent="v2box/6.0.5",
+            hwid="device-000001",
+            ip="203.0.113.3",
+        )
+
+        with patch("phantom_subscription_panel.app.async_session", self.session_factory):
+            await _enforce_device_limit(config, first)
+            await _enforce_device_limit(config, upgraded)
+            await _enforce_device_limit(config, upgraded_on_new_network)
+
+        async with self.session_factory() as session:
+            devices = list((await session.execute(select(SubscriptionDevice))).scalars().all())
+        self.assertEqual(len(devices), 1)
+        self.assertIn("v2:explicit:", devices[0].fingerprint_aliases_json)
+
+    async def test_two_clients_on_same_machine_share_a_learned_slot(self) -> None:
+        config = await self._config(token="mac-client-pairing", limit=1)
+        streisand = _request(
+            user_agent="Streisand/48 CFNetwork/3860.700.1 Darwin/25.6.0",
+            ip="192.0.2.1",
+        )
+        hiddify = _request(
+            user_agent="Hiddify/4.0",
+            hwid="mac-install-000001",
+            ip="192.0.2.1",
+        )
+        hiddify_on_new_network = _request(
+            user_agent="Hiddify/4.0",
+            hwid="mac-install-000001",
+            ip="198.51.100.2",
+        )
+
+        with patch("phantom_subscription_panel.app.async_session", self.session_factory):
+            await _enforce_device_limit(config, streisand)
+            await _enforce_device_limit(config, hiddify)
+            await _enforce_device_limit(config, hiddify_on_new_network)
+
         async with self.session_factory() as session:
             count = await session.scalar(select(func.count(SubscriptionDevice.id)))
         self.assertEqual(count, 1)
@@ -284,6 +345,30 @@ class DeviceLimitTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(first_count, 2)
         self.assertEqual(second_count, 1)
+
+    async def test_startup_cleanup_removes_preview_bot_rows(self) -> None:
+        config = await self._config(token="preview-cleanup", limit=1)
+        now = datetime.now(timezone.utc)
+        async with self.session_factory() as session:
+            session.add(
+                SubscriptionDevice(
+                    public_sub_token=config.public_sub_token,
+                    fingerprint="legacy-preview",
+                    user_agent="Google-Read-Aloud",
+                    ip_hint="192.0.2.1",
+                    first_seen_at=now,
+                    last_seen_at=now,
+                )
+            )
+            await session.commit()
+
+        with patch("phantom_subscription_panel.app.async_session", self.session_factory):
+            deleted = await _collapse_legacy_device_rows()
+
+        self.assertEqual(deleted, 1)
+        async with self.session_factory() as session:
+            count = await session.scalar(select(func.count(SubscriptionDevice.id)))
+        self.assertEqual(count, 0)
 
 
 if __name__ == "__main__":

@@ -137,6 +137,12 @@ async def startup() -> None:
             await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN address_rewrites_json VARCHAR"))
         except SQLAlchemyError:
             pass
+        try:
+            await conn.execute(
+                text("ALTER TABLE subscription_devices ADD COLUMN fingerprint_aliases_json VARCHAR")
+            )
+        except SQLAlchemyError:
+            pass
     await _collapse_legacy_device_rows()
     settings.subscription_cache_dir.mkdir(parents=True, exist_ok=True)
     _upstream_client = httpx.AsyncClient(
@@ -1472,14 +1478,85 @@ def _device_fingerprints(request: Request) -> tuple[str, str, str, str, str]:
     )
 
 
+def _device_fingerprint_aliases(device: SubscriptionDevice) -> set[str]:
+    try:
+        values = json.loads(device.fingerprint_aliases_json or "[]")
+    except (TypeError, ValueError):
+        return set()
+    return {
+        str(value)
+        for value in values
+        if isinstance(value, str) and value
+    }
+
+
+def _set_device_fingerprint_aliases(
+    device: SubscriptionDevice,
+    fingerprints: set[str],
+) -> None:
+    fingerprints.discard("")
+    fingerprints.discard(device.fingerprint or "")
+    device.fingerprint_aliases_json = json.dumps(
+        sorted(fingerprints)[-32:],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+
+
+def _device_platform(user_agent: str) -> str:
+    value = user_agent.strip().casefold()
+    if any(marker in value for marker in ("macos", "mac os", "darwin")):
+        return "macos"
+    if any(marker in value for marker in ("iphone", "ipad", "/ios", ";ios")):
+        return "ios"
+    if "android" in value:
+        return "android"
+    if "windows" in value:
+        return "windows"
+    if "linux" in value:
+        return "linux"
+    return ""
+
+
+def _same_device_pairing_candidate(
+    device: SubscriptionDevice,
+    *,
+    user_agent: str,
+    ip_hint: str,
+    now: datetime,
+) -> bool:
+    if not ip_hint or not device.ip_hint or device.ip_hint != ip_hint:
+        return False
+    last_seen_at = _as_aware(device.last_seen_at)
+    if last_seen_at is None or (now - last_seen_at).total_seconds() > 7 * 86400:
+        return False
+    existing_platform = _device_platform(device.user_agent or "")
+    current_platform = _device_platform(user_agent)
+    if existing_platform and current_platform and existing_platform != current_platform:
+        return False
+    return bool(
+        _device_client_family(device.user_agent or "")
+        and _device_client_family(user_agent)
+    )
+
+
 async def _collapse_legacy_device_rows() -> int:
     async with async_session() as session:
         result = await session.execute(
-            select(SubscriptionDevice).where(
-                ~SubscriptionDevice.fingerprint.startswith("v2:")
-            )
+            select(SubscriptionDevice)
         )
-        devices = list(result.scalars().all())
+        all_devices = list(result.scalars().all())
+        ignored_ids = {
+            device.id
+            for device in all_devices
+            if not _is_trackable_device_request(device.user_agent or "")
+        }
+        devices = [
+            device
+            for device in all_devices
+            if device.id not in ignored_ids
+            and not (device.fingerprint or "").startswith("v2:")
+        ]
         grouped: dict[tuple[str, str], list[SubscriptionDevice]] = {}
         for device in devices:
             family = _device_client_family(device.user_agent or "")
@@ -1496,14 +1573,15 @@ async def _collapse_legacy_device_rows() -> int:
                 reverse=True,
             )
             duplicate_ids.update(device.id for device in matches[1:])
-        if not duplicate_ids:
+        delete_ids = duplicate_ids | ignored_ids
+        if not delete_ids:
             return 0
 
         await session.execute(
-            delete(SubscriptionDevice).where(SubscriptionDevice.id.in_(duplicate_ids))
+            delete(SubscriptionDevice).where(SubscriptionDevice.id.in_(delete_ids))
         )
         await session.commit()
-        return len(duplicate_ids)
+        return len(delete_ids)
 
 
 async def _enforce_device_limit(config: Config, request: Request) -> None:
@@ -1523,6 +1601,11 @@ async def _enforce_device_limit(config: Config, request: Request) -> None:
         devices = list(device_result.scalars().all())
         direct_matches = [
             device for device in devices if device.fingerprint in {fingerprint, legacy_fingerprint}
+        ]
+        alias_matches = [
+            device
+            for device in devices
+            if fingerprint in _device_fingerprint_aliases(device)
         ]
         ua_matches = [
             device
@@ -1545,17 +1628,43 @@ async def _enforce_device_limit(config: Config, request: Request) -> None:
             and _device_client_family(device.user_agent or "") == client_family
             for device in devices
         )
-        migration_matches = (
-            ua_matches or legacy_family_matches
-            if identity_kind == "user-agent"
-            else (ua_matches or legacy_family_matches)[:1] if not has_v2_family_identity else []
+        if identity_kind == "user-agent":
+            ua_migration_matches = ua_matches
+        else:
+            ua_migration_matches = [
+                device
+                for device in ua_matches
+                if not (device.fingerprint or "").startswith("v2:explicit:")
+            ]
+        legacy_migration_matches = (
+            legacy_family_matches
+            if identity_kind == "user-agent" or not has_v2_family_identity
+            else []
         )
-        matches = direct_matches or migration_matches
+        network_pairing_matches = [
+            device
+            for device in devices
+            if _same_device_pairing_candidate(
+                device,
+                user_agent=user_agent,
+                ip_hint=ip_hint,
+                now=now,
+            )
+        ]
+        if len(network_pairing_matches) != 1:
+            network_pairing_matches = []
+        matches = (
+            direct_matches
+            or alias_matches
+            or ua_migration_matches
+            or legacy_migration_matches
+            or network_pairing_matches
+        )
         existing = matches[0] if matches else None
         if existing is not None:
             cleanup_matches = {
                 device.id: device
-                for device in [*matches, *legacy_family_matches]
+                for device in [*matches, *legacy_family_matches, *ua_migration_matches]
             }
             duplicate_ids = {
                 device_id for device_id in cleanup_matches if device_id != existing.id
@@ -1564,7 +1673,14 @@ async def _enforce_device_limit(config: Config, request: Request) -> None:
                 await session.execute(
                     delete(SubscriptionDevice).where(SubscriptionDevice.id.in_(duplicate_ids))
                 )
-            existing.fingerprint = fingerprint
+            aliases = _device_fingerprint_aliases(existing)
+            for matched_device in cleanup_matches.values():
+                aliases.add(matched_device.fingerprint or "")
+                aliases.update(_device_fingerprint_aliases(matched_device))
+            aliases.add(fingerprint)
+            if not (existing.fingerprint or "").startswith("v2:"):
+                existing.fingerprint = fingerprint
+            _set_device_fingerprint_aliases(existing, aliases)
             existing.user_agent = user_agent
             existing.ip_hint = ip_hint
             existing.last_seen_at = now

@@ -43,6 +43,7 @@ class SubscriptionDevice(Base):
     id = Column(Integer, primary_key=True)
     public_sub_token = Column(String, nullable=False, index=True)
     fingerprint = Column(String, nullable=False)
+    fingerprint_aliases_json = Column(String, nullable=True)
     user_agent = Column(String, nullable=True)
     ip_hint = Column(String, nullable=True)
     first_seen_at = Column(DateTime, nullable=False)
