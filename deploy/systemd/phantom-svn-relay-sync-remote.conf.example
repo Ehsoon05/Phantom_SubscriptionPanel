@@ -1,3 +1,3 @@
 [Service]
-ExecStartPost=/opt/phantom-subscription-panel/venv/bin/python /opt/phantom-subscription-panel/scripts/deploy_haproxy_remote.py --config /etc/haproxy/haproxy.cfg --host root@RELAY_IP --identity-file /etc/phantom-svn-relay/id_ed25519
+ExecStartPost=/opt/phantom-subscription-panel/venv/bin/python /opt/phantom-subscription-panel/scripts/deploy_haproxy_remote.py --config /etc/haproxy/haproxy.cfg --host root@RELAY_IP --identity-file /etc/phantom-svn-relay/id_ed25519 --known-hosts-file /etc/phantom-svn-relay/known_hosts
 ReadOnlyPaths=/etc/phantom-svn-relay
