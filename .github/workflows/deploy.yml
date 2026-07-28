@@ -1,0 +1,89 @@
+name: Deploy production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phantom-subscription-panel-production
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+
+      - name: Run tests
+        run: pytest -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install SSH client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Deploy without replacing runtime data
+        env:
+          SSHPASS: ${{ secrets.SUB_PANEL_PASSWORD }}
+          DEPLOY_HOST: ${{ secrets.SUB_PANEL_HOST }}
+          DEPLOY_USER: ${{ secrets.SUB_PANEL_USER }}
+        run: |
+          set -euo pipefail
+
+          sshpass -e ssh             -o ConnectTimeout=20             -o ServerAliveInterval=15             -o ServerAliveCountMax=3             -o StrictHostKeyChecking=no             -o UserKnownHostsFile=/dev/null             "${DEPLOY_USER}@${DEPLOY_HOST}" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+
+          APP_DIR=/opt/phantom-subscription-panel
+          cd "${APP_DIR}"
+
+          test -f .env
+          test -d venv
+
+          git fetch --prune origin main
+          git checkout -f main
+          git reset --hard origin/main
+
+          ./venv/bin/python -m pip install -r requirements.txt
+          ./venv/bin/python -m compileall -q phantom_subscription_panel
+
+          systemctl restart phantom-subscription-panel.service
+
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8090/health >/dev/null; then
+              break
+            fi
+            if [ "${attempt}" -eq 30 ]; then
+              systemctl status phantom-subscription-panel.service --no-pager
+              journalctl -u phantom-subscription-panel.service -n 100 --no-pager
+              exit 1
+            fi
+            sleep 2
+          done
+
+          systemctl is-active --quiet phantom-subscription-panel.service
+          REMOTE
+
+      - name: Verify public endpoint
+        run: curl --fail --silent --show-error --retry 5 --retry-delay 3 https://api.phantomhubs.shop/health
