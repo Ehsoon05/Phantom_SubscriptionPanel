@@ -65,6 +65,18 @@ jobs:
           git checkout -f main
           git reset --hard origin/main
 
+          if grep -q '^SVN_AUTOMATIC_ADDRESS_REWRITES_ENABLED=' .env; then
+            sed -i 's/^SVN_AUTOMATIC_ADDRESS_REWRITES_ENABLED=.*/SVN_AUTOMATIC_ADDRESS_REWRITES_ENABLED=true/' .env
+          else
+            printf '\nSVN_AUTOMATIC_ADDRESS_REWRITES_ENABLED=true\n' >> .env
+          fi
+
+          if grep -q '^SVN_FALLBACK_ENDPOINT_REWRITES=' .env; then
+            sed -i 's/^SVN_FALLBACK_ENDPOINT_REWRITES=.*/SVN_FALLBACK_ENDPOINT_REWRITES=/' .env
+          else
+            printf 'SVN_FALLBACK_ENDPOINT_REWRITES=\n' >> .env
+          fi
+
           ./venv/bin/python -m pip install -r requirements.txt
           ./venv/bin/python -m compileall -q phantom_subscription_panel
 
