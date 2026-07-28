@@ -61,7 +61,12 @@ class Settings:
     ).strip()
     svn_fallback_endpoint_rewrites = os.getenv(
         "SVN_FALLBACK_ENDPOINT_REWRITES",
-        "",
+        ",".join(
+            (
+                "mmi.api.bahrevari01.shop:19302=koper.api.bahrevari01.shop:19302",
+                "mmip.api.bahrevari01.shop:19302=koper.api.bahrevari01.shop:19302",
+            )
+        ),
     ).strip()
     svn_ws_origin_host = os.getenv(
         "SVN_WS_ORIGIN_HOST",

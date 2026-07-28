@@ -160,6 +160,22 @@ class AddressRewriteTests(unittest.TestCase):
 
         self.assertEqual(_rewrite_svn_fallback_endpoint(source), source)
 
+    def test_unhealthy_mmi_trojan_endpoints_use_the_working_koper_route(self) -> None:
+        for source in (
+            "mmi.api.bahrevari01.shop",
+            "mmip.api.bahrevari01.shop",
+        ):
+            with self.subTest(source=source):
+                line = (
+                    f"trojan://secret@{source}:19302"
+                    "?security=reality&type=xhttp&sni=www.yahoo.com#Test"
+                )
+                self.assertEqual(
+                    _rewrite_svn_fallback_endpoint(line),
+                    "trojan://secret@koper.api.bahrevari01.shop:19302"
+                    "?security=reality&type=xhttp&sni=www.yahoo.com#Test",
+                )
+
     def test_non_matching_ws_host_is_not_rewritten(self) -> None:
         source = (
             "vless://user-id@192.0.2.10:80"

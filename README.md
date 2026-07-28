@@ -81,7 +81,9 @@ rewritten to the DNS-only `wsr.api.bahrevari01.shop` relay.
 When relay rewriting is enabled, other domain-based SVN endpoints are rewritten
 through `SVN_DIRECT_HOST_REWRITES`. Port-changing fallback listeners are
 disabled by default; `SVN_FALLBACK_ENDPOINT_REWRITES` is reserved for
-individually tested emergency routes.
+individually tested emergency routes. The two unhealthy SVN Trojan/xHTTP
+endpoints on `mmi` and `mmip` port `19302` use the working `koper` route while
+preserving their credentials, Reality parameters, and port.
 
 Admin page:
 
