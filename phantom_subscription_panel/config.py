@@ -49,6 +49,9 @@ class Settings:
                 "tun.temas-bor.ir=tun.api.bahrevari01.shop",
                 "white-mt.jorzel.ir=white-mt.api.bahrevari01.shop",
                 "white-mtp.jorzel.ir=white-mtp.api.bahrevari01.shop",
+                "mmi.jorzel.ir=mmi.api.bahrevari01.shop",
+                "mmip.jorzel.ir=mmip.api.bahrevari01.shop",
+                "koper.jorzel.ir=koper.api.bahrevari01.shop",
             )
         ),
     ).strip()
@@ -73,7 +76,7 @@ class Settings:
         "SVN_WS_ALIAS",
         "wsr.api.bahrevari01.shop",
     ).strip().lower().strip(".")
-    svn_ws_alias_port = int(os.getenv("SVN_WS_ALIAS_PORT", "8080"))
+    svn_ws_alias_port = int(os.getenv("SVN_WS_ALIAS_PORT", "443"))
 
 
 settings = Settings()

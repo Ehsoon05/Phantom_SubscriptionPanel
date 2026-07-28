@@ -95,6 +95,9 @@ class AddressRewriteTests(unittest.TestCase):
                 "vless://user@tun.temas-bor.ir:443?security=reality&type=xhttp\n"
                 "trojan://user@WHITE-MTP.jorzel.ir:19302?security=reality&type=xhttp\n"
                 "trojan://user@white-mt.jorzel.ir:19302?security=reality&type=xhttp\n"
+                "vless://user@mmi.jorzel.ir:1963?security=none&type=tcp\n"
+                "vless://user@mmip.jorzel.ir:1963?security=none&type=tcp\n"
+                "trojan://user@koper.jorzel.ir:19302?security=reality&type=tcp\n"
             ).encode()
         )
 
@@ -104,6 +107,9 @@ class AddressRewriteTests(unittest.TestCase):
                 "tun.temas-bor.ir": "tun.api.bahrevari01.shop",
                 "white-mt.jorzel.ir": "white-mt.api.bahrevari01.shop",
                 "white-mtp.jorzel.ir": "white-mtp.api.bahrevari01.shop",
+                "mmi.jorzel.ir": "mmi.api.bahrevari01.shop",
+                "mmip.jorzel.ir": "mmip.api.bahrevari01.shop",
+                "koper.jorzel.ir": "koper.api.bahrevari01.shop",
             },
         )
 
@@ -117,7 +123,7 @@ class AddressRewriteTests(unittest.TestCase):
 
         self.assertEqual(
             rewritten,
-            "vless://user-id@wsr.api.bahrevari01.shop:8080"
+            "vless://user-id@wsr.api.bahrevari01.shop:443"
             "?security=none&type=ws&path=&host=BankMelat.glObal.ssl.faStly.nEt.#Fastly",
         )
 
@@ -163,7 +169,7 @@ class AddressRewriteTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "@wsr.api.bahrevari01.shop:8080",
+            "@wsr.api.bahrevari01.shop:443",
             base64.b64decode(rewritten).decode(),
         )
 
@@ -184,4 +190,4 @@ class AddressRewriteTests(unittest.TestCase):
 
         self.assertIn("@es.api.bahrevari01.shop:22009", lines[0])
         self.assertIn("@dyr.api.bahrevari01.shop:8443", lines[1])
-        self.assertIn("@wsr.api.bahrevari01.shop:8080", lines[2])
+        self.assertIn("@wsr.api.bahrevari01.shop:443", lines[2])
