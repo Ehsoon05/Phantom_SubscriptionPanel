@@ -60,11 +60,15 @@ systemctl reload nginx
 certbot --nginx -d api.phantomhubs.shop
 ```
 
-SVN country Reality endpoints are served through HAProxy with dynamic DNS
-resolution. `phantom-svn-relay-sync.timer` refreshes the country host/port map
-from a live SVN subscription every five minutes and preserves the last-good
-configuration when the upstream is temporarily unavailable. Country hostnames
-use the two-letter prefix under the DNS-only `*.api.bahrevari01.shop` record.
+SVN relay rewriting is disabled by default so an unavailable relay cannot break
+otherwise healthy provider endpoints. Set
+`SVN_AUTOMATIC_ADDRESS_REWRITES_ENABLED=true` only after the relay has passed
+connectivity checks. When enabled, country Reality endpoints are served through
+HAProxy with dynamic DNS resolution. `phantom-svn-relay-sync.timer` refreshes
+the country host/port map from a live SVN subscription every five minutes and
+preserves the last-good configuration when the upstream is temporarily
+unavailable. Country hostnames use the two-letter prefix under the DNS-only
+`*.api.bahrevari01.shop` record.
 
 For a dedicated relay host, install
 `scripts/install_haproxy_from_stdin.py` as a forced SSH command for a restricted
@@ -74,12 +78,11 @@ replace `RELAY_IP`, and restart the timer. Every successful sync will validate
 and deploy the current HAProxy configuration to the relay without giving the
 sync service an unrestricted remote shell.
 
-Direct Fastly WebSocket addresses from SVN are rewritten to the DNS-only
-`wsr.api.bahrevari01.shop` relay. This keeps the public subscription domain
-separate from transport traffic while allowing Fastly IP changes to propagate
-through DNS.
+When relay rewriting is enabled, direct Fastly WebSocket addresses from SVN are
+rewritten to the DNS-only `wsr.api.bahrevari01.shop` relay.
 
-Other domain-based SVN endpoints are first rewritten through
+When relay rewriting is enabled, other domain-based SVN endpoints are first
+rewritten through
 `SVN_DIRECT_HOST_REWRITES`, then selected blocked transports are routed through
 the tested HAProxy fallback listeners configured by
 `SVN_FALLBACK_ENDPOINT_REWRITES`.
