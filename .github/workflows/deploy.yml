@@ -72,9 +72,9 @@ jobs:
           fi
 
           if grep -q '^SVN_FALLBACK_ENDPOINT_REWRITES=' .env; then
-            sed -i 's/^SVN_FALLBACK_ENDPOINT_REWRITES=.*/SVN_FALLBACK_ENDPOINT_REWRITES=/' .env
+            sed -i 's#^SVN_FALLBACK_ENDPOINT_REWRITES=.*#SVN_FALLBACK_ENDPOINT_REWRITES=mmi.api.bahrevari01.shop:19302=koper.api.bahrevari01.shop:19302,mmip.api.bahrevari01.shop:19302=koper.api.bahrevari01.shop:19302#' .env
           else
-            printf 'SVN_FALLBACK_ENDPOINT_REWRITES=\n' >> .env
+            printf 'SVN_FALLBACK_ENDPOINT_REWRITES=mmi.api.bahrevari01.shop:19302=koper.api.bahrevari01.shop:19302,mmip.api.bahrevari01.shop:19302=koper.api.bahrevari01.shop:19302\n' >> .env
           fi
 
           ./venv/bin/python -m pip install -r requirements.txt
