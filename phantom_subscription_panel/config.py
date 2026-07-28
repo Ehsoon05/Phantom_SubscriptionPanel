@@ -61,16 +61,7 @@ class Settings:
     ).strip()
     svn_fallback_endpoint_rewrites = os.getenv(
         "SVN_FALLBACK_ENDPOINT_REWRITES",
-        "\n".join(
-            (
-                "fi.api.bahrevari01.shop:22010=fir.api.bahrevari01.shop:2053",
-                "tun.api.bahrevari01.shop:443=dyr.api.bahrevari01.shop:8443",
-                "tun.api.bahrevari01.shop:1963=xhr.api.bahrevari01.shop:2096",
-                "tun.api.bahrevari01.shop:2087=fnr.api.bahrevari01.shop:8880",
-                "white-mt.api.bahrevari01.shop:19302=mtd.api.bahrevari01.shop:2083",
-                "white-mtp.api.bahrevari01.shop:19302=mtpd.api.bahrevari01.shop:2087",
-            )
-        ),
+        "",
     ).strip()
     svn_ws_origin_host = os.getenv(
         "SVN_WS_ORIGIN_HOST",

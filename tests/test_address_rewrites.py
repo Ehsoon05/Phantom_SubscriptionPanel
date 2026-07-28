@@ -137,14 +137,28 @@ class AddressRewriteTests(unittest.TestCase):
             "white-mt.api.bahrevari01.shop:19302": "mtd.api.bahrevari01.shop:2083",
             "white-mtp.api.bahrevari01.shop:19302": "mtpd.api.bahrevari01.shop:2087",
         }
+        previous = settings.svn_fallback_endpoint_rewrites
+        settings.svn_fallback_endpoint_rewrites = "\n".join(
+            f"{source}={target}" for source, target in cases.items()
+        )
+        try:
+            for source, target in cases.items():
+                with self.subTest(source=source):
+                    line = f"vless://user@{source}?security=reality&type=xhttp#Test"
+                    self.assertEqual(
+                        _rewrite_svn_fallback_endpoint(line),
+                        f"vless://user@{target}?security=reality&type=xhttp#Test",
+                    )
+        finally:
+            settings.svn_fallback_endpoint_rewrites = previous
 
-        for source, target in cases.items():
-            with self.subTest(source=source):
-                line = f"vless://user@{source}?security=reality&type=xhttp#Test"
-                self.assertEqual(
-                    _rewrite_svn_fallback_endpoint(line),
-                    f"vless://user@{target}?security=reality&type=xhttp#Test",
-                )
+    def test_svn_relay_keeps_the_provider_port_by_default(self) -> None:
+        source = (
+            "vless://user@tun.api.bahrevari01.shop:1963"
+            "?security=reality&type=xhttp&sni=www.yahoo.com#Test"
+        )
+
+        self.assertEqual(_rewrite_svn_fallback_endpoint(source), source)
 
     def test_non_matching_ws_host_is_not_rewritten(self) -> None:
         source = (
