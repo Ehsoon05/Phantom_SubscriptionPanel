@@ -42,6 +42,10 @@ class Settings:
         "SVN_RELAY_TARGET_SUFFIX",
         "api.bahrevari01.shop",
     ).strip().lower().strip(".")
+    svn_automatic_address_rewrites_enabled = _bool_env(
+        "SVN_AUTOMATIC_ADDRESS_REWRITES_ENABLED",
+        False,
+    )
     svn_direct_host_rewrites = os.getenv(
         "SVN_DIRECT_HOST_REWRITES",
         "\n".join(

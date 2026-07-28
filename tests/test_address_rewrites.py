@@ -14,6 +14,7 @@ from phantom_subscription_panel.app import (
     _subscription_body_without_branded_suffixes,
 )
 from phantom_subscription_panel.database import Config
+from phantom_subscription_panel.config import settings
 
 
 class AddressRewriteTests(unittest.TestCase):
@@ -153,7 +154,7 @@ class AddressRewriteTests(unittest.TestCase):
 
         self.assertEqual(_rewrite_svn_ws_address(source), source)
 
-    def test_svn_source_rewrites_ws_even_without_country_nodes(self) -> None:
+    def test_svn_source_preserves_provider_endpoints_when_relay_is_disabled(self) -> None:
         source = (
             "vless://user-id@151.101.193.54:80"
             "?security=none&type=ws&host=bankmelat.global.ssl.fastly.net#Fastly\n"
@@ -168,12 +169,9 @@ class AddressRewriteTests(unittest.TestCase):
             {"body": base64.b64encode(source.encode())},
         )
 
-        self.assertIn(
-            "@wsr.api.bahrevari01.shop:443",
-            base64.b64decode(rewritten).decode(),
-        )
+        self.assertIn("@151.101.193.54:80", base64.b64decode(rewritten).decode())
 
-    def test_web_preview_lines_use_the_same_svn_aliases(self) -> None:
+    def test_web_preview_preserves_provider_endpoints_when_relay_is_disabled(self) -> None:
         source = (
             "vless://user@es.sv.temas-bor.ir:22009?security=reality\n"
             "vless://user@tun.temas-bor.ir:443?security=reality&type=xhttp\n"
@@ -188,6 +186,29 @@ class AddressRewriteTests(unittest.TestCase):
 
         lines = _rewritten_subscription_lines(config, upstream)
 
+        self.assertIn("@es.sv.temas-bor.ir:22009", lines[0])
+        self.assertIn("@tun.temas-bor.ir:443", lines[1])
+        self.assertIn("@151.101.193.54:80", lines[2])
+
+    def test_svn_relay_rewrites_remain_available_as_explicit_opt_in(self) -> None:
+        source = (
+            "vless://user@es.sv.temas-bor.ir:22009?security=reality\n"
+            "vless://user@151.101.193.54:80"
+            "?security=none&type=ws&host=bankmelat.global.ssl.fastly.net\n"
+        )
+        config = Config(sub_link="https://sub.svnteam-max.com/sub/example")
+        previous = settings.svn_automatic_address_rewrites_enabled
+        settings.svn_automatic_address_rewrites_enabled = True
+        try:
+            lines = _rewritten_subscription_lines(
+                config,
+                {
+                    "body": base64.b64encode(source.encode()),
+                    "lines": source.splitlines(),
+                },
+            )
+        finally:
+            settings.svn_automatic_address_rewrites_enabled = previous
+
         self.assertIn("@es.api.bahrevari01.shop:22009", lines[0])
-        self.assertIn("@dyr.api.bahrevari01.shop:8443", lines[1])
-        self.assertIn("@wsr.api.bahrevari01.shop:443", lines[2])
+        self.assertIn("@wsr.api.bahrevari01.shop:443", lines[1])

@@ -1070,12 +1070,21 @@ def _subscription_body_with_info_proxies(config: Config, upstream: dict) -> byte
 def _subscription_rewrite_context(config: Config, body: bytes) -> tuple[dict[str, str], bool]:
     automatic_rewrites = _automatic_svn_country_rewrites(body)
     source_host = (urlparse(config.sub_link or "").hostname or "").lower().rstrip(".")
+    is_svn_subscription = (
+        bool(automatic_rewrites)
+        or source_host == settings.svn_upstream_host
+        or source_host == "sub.svnteam-max.com"
+    )
+    if is_svn_subscription and not settings.svn_automatic_address_rewrites_enabled:
+        # Preserve the provider's working endpoints. Relay rewrites are opt-in
+        # because a dead relay would otherwise break every SVN subscription.
+        return {}, False
     return (
         {
             **automatic_rewrites,
             **_config_address_rewrites(config),
         },
-        bool(automatic_rewrites) or source_host == settings.svn_upstream_host,
+        is_svn_subscription,
     )
 
 
