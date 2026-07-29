@@ -76,24 +76,11 @@ jobs:
           if [ -f /tmp/phantom-panel-integration-token ]; then
             integration_token="$(cat /tmp/phantom-panel-integration-token)"
             rm -f /tmp/phantom-panel-integration-token
-            PANEL_INTEGRATION_SYNC_TOKEN="${integration_token}" ./venv/bin/python - <<'PY'
-from pathlib import Path
-import os
-
-path = Path(".env")
-key = "PANEL_INTEGRATION_SYNC_TOKEN"
-value = os.environ["PANEL_INTEGRATION_SYNC_TOKEN"]
-lines = path.read_text().splitlines()
-updated = False
-for index, line in enumerate(lines):
-    if line.startswith(f"{key}="):
-        lines[index] = f"{key}={value}"
-        updated = True
-        break
-if not updated:
-    lines.append(f"{key}={value}")
-path.write_text("\n".join(lines) + "\n")
-PY
+            if grep -q '^PANEL_INTEGRATION_SYNC_TOKEN=' .env; then
+              sed -i "s|^PANEL_INTEGRATION_SYNC_TOKEN=.*|PANEL_INTEGRATION_SYNC_TOKEN=${integration_token}|" .env
+            else
+              printf '\nPANEL_INTEGRATION_SYNC_TOKEN=%s\n' "${integration_token}" >> .env
+            fi
           fi
 
           git fetch --prune origin main
