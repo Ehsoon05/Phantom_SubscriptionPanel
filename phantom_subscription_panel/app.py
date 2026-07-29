@@ -74,6 +74,7 @@ class ConfigSyncPayload(BaseModel):
     info_proxies_enabled: bool | None = None
     show_header: bool | None = None
     channel_handle: str | None = None
+    address_rewrites: str | None = None
 
 
 class PanelSettingsSyncPayload(BaseModel):
@@ -528,11 +529,8 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
         if payload.display_total_bytes is not None:
             total = max(0, int(payload.display_total_bytes))
             config.display_total_bytes = total or None
-        config.device_limit = (
-            max(0, int(payload.device_limit))
-            if payload.device_limit is not None
-            else None
-        )
+        if payload.device_limit is not None:
+            config.device_limit = max(0, int(payload.device_limit))
         if payload.show_config_preview is not None:
             config.show_config_preview = bool(payload.show_config_preview)
         if payload.info_proxies_enabled is not None:
@@ -541,6 +539,10 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
             config.show_header = bool(payload.show_header)
         if payload.channel_handle is not None:
             config.channel_handle = payload.channel_handle.strip() or None
+        if payload.address_rewrites is not None:
+            config.address_rewrites_json = _serialize_address_rewrites(
+                payload.address_rewrites
+            )
         await session.commit()
     _schedule_cache_refresh(payload.upstream_url)
     return "ok"

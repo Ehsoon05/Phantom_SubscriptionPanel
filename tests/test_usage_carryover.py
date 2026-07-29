@@ -44,5 +44,19 @@ class UsageCarryoverTests(unittest.TestCase):
         self.assertIs(_apply_usage_carryover(config, upstream), upstream)
 
 
+class SyncPayloadTests(unittest.TestCase):
+    def test_sync_payload_accepts_explicit_empty_address_rewrites(self) -> None:
+        from phantom_subscription_panel.app import ConfigSyncPayload
+
+        payload = ConfigSyncPayload(
+            token="public-token",
+            upstream_url="https://example.com/sub/user",
+            volume_gb=10,
+            address_rewrites="",
+        )
+
+        self.assertEqual(payload.address_rewrites, "")
+
+
 if __name__ == "__main__":
     unittest.main()
