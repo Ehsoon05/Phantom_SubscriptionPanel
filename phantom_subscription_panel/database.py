@@ -23,6 +23,8 @@ class Config(Base):
     service_name = Column(String, nullable=True)
     panel_username = Column(String, nullable=True)
     telegram_user_id = Column(BigInteger, nullable=True)
+    usage_offset_bytes = Column(BigInteger, nullable=False, default=0)
+    display_total_bytes = Column(BigInteger, nullable=True)
     profile_title = Column(String, nullable=True)
     device_limit = Column(Integer, nullable=True)
     device_limit_warning_count = Column(Integer, nullable=False, default=0)

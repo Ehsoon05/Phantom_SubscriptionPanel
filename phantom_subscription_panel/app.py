@@ -67,6 +67,8 @@ class ConfigSyncPayload(BaseModel):
     panel_username: str | None = None
     profile_title: str | None = None
     telegram_user_id: int | None = None
+    usage_offset_bytes: int | None = None
+    display_total_bytes: int | None = None
     device_limit: int | None = None
     show_config_preview: bool | None = None
     info_proxies_enabled: bool | None = None
@@ -126,6 +128,14 @@ async def startup() -> None:
         except SQLAlchemyError:
             pass
         try:
+            await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN usage_offset_bytes BIGINT DEFAULT 0 NOT NULL"))
+        except SQLAlchemyError:
+            pass
+        try:
+            await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN display_total_bytes BIGINT"))
+        except SQLAlchemyError:
+            pass
+        try:
             await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN device_limit_warning_count INTEGER DEFAULT 0 NOT NULL"))
         except SQLAlchemyError:
             pass
@@ -182,7 +192,7 @@ async def subscription(token: str, request: Request) -> Response:
     if not config:
         raise HTTPException(status_code=404, detail="Subscription not found")
 
-    upstream = await _fetch_upstream(config.sub_link)
+    upstream = _apply_usage_carryover(config, await _fetch_upstream(config.sub_link))
     if _wants_html(request):
         web_title = await _fetch_upstream_web_title(config.sub_link)
         return HTMLResponse(_render_subscription_page(config, upstream, web_title=web_title))
@@ -513,6 +523,11 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
             config.panel_username = payload.panel_username.strip() or None
         if payload.telegram_user_id is not None:
             config.telegram_user_id = int(payload.telegram_user_id)
+        if payload.usage_offset_bytes is not None:
+            config.usage_offset_bytes = max(0, int(payload.usage_offset_bytes))
+        if payload.display_total_bytes is not None:
+            total = max(0, int(payload.display_total_bytes))
+            config.display_total_bytes = total or None
         config.device_limit = (
             max(0, int(payload.device_limit))
             if payload.device_limit is not None
@@ -612,7 +627,7 @@ async def config_metadata(token: str, authorization: str | None = Header(default
     config = await _config_for_token(token)
     if not config:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    upstream = await _fetch_upstream(config.sub_link)
+    upstream = _apply_usage_carryover(config, await _fetch_upstream(config.sub_link))
     usage = upstream["usage"]
     used = usage.get("upload", 0) + usage.get("download", 0)
     total = usage.get("total", 0) or max(config.volume_gb, 0) * 1024**3
@@ -1351,6 +1366,38 @@ def _parse_subscription_userinfo(value: str) -> dict[str, int]:
         except ValueError:
             continue
     return values
+
+
+def _apply_usage_carryover(config: Config, upstream: dict) -> dict:
+    offset = max(0, int(config.usage_offset_bytes or 0))
+    display_total = (
+        max(0, int(config.display_total_bytes))
+        if config.display_total_bytes is not None
+        else None
+    )
+    if not offset and display_total is None:
+        return upstream
+
+    adjusted = {
+        **upstream,
+        "usage": dict(upstream.get("usage") or {}),
+        "forward_headers": dict(upstream.get("forward_headers") or {}),
+    }
+    usage = adjusted["usage"]
+    usage["upload"] = max(0, int(usage.get("upload", 0) or 0)) + offset
+    usage["download"] = max(0, int(usage.get("download", 0) or 0))
+    if display_total is not None:
+        usage["total"] = display_total
+
+    fields = [
+        f"upload={usage['upload']}",
+        f"download={usage['download']}",
+        f"total={max(0, int(usage.get('total', 0) or 0))}",
+    ]
+    if usage.get("expire"):
+        fields.append(f"expire={max(0, int(usage['expire']))}")
+    adjusted["forward_headers"]["subscription-userinfo"] = "; ".join(fields)
+    return adjusted
 
 
 def _decode_profile_title(value: str) -> str:
