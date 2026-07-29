@@ -46,5 +46,61 @@ jobs:
             printf '\nPANEL_INTEGRATION_SYNC_TOKEN=%s\n' "${token}" >> .env
           fi
           systemctl restart phantom-subscription-panel.service
+          for attempt in {1..15}; do
+            if curl --fail --silent http://127.0.0.1:8090/health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+          REMOTE
+name: Provision subscription integration token
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install SSH client
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+
+      - name: Install integration credential
+        env:
+          SSHPASS: ${{ secrets.SUB_PANEL_PASSWORD }}
+          DEPLOY_HOST: ${{ secrets.SUB_PANEL_HOST }}
+          DEPLOY_USER: ${{ secrets.SUB_PANEL_USER }}
+          PANEL_INTEGRATION_SYNC_TOKEN: ${{ secrets.PANEL_INTEGRATION_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${PANEL_INTEGRATION_SYNC_TOKEN}"
+          printf '%s' "${PANEL_INTEGRATION_SYNC_TOKEN}" | sshpass -e ssh \
+            -o ConnectTimeout=20 \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            'umask 077; cat > /tmp/phantom-panel-integration-token'
+          sshpass -e ssh \
+            -o ConnectTimeout=20 \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          cd /opt/phantom-subscription-panel
+          token="$(cat /tmp/phantom-panel-integration-token)"
+          rm -f /tmp/phantom-panel-integration-token
+          if grep -q '^PANEL_INTEGRATION_SYNC_TOKEN=' .env; then
+            sed -i "s|^PANEL_INTEGRATION_SYNC_TOKEN=.*|PANEL_INTEGRATION_SYNC_TOKEN=${token}|" .env
+          else
+            printf '\nPANEL_INTEGRATION_SYNC_TOKEN=%s\n' "${token}" >> .env
+          fi
+          systemctl restart phantom-subscription-panel.service
           curl --fail --silent http://127.0.0.1:8090/health >/dev/null
           REMOTE
