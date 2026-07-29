@@ -506,7 +506,7 @@ async def admin_update_subscription_display(
 
 @app.post("/internal/configs", response_class=PlainTextResponse)
 async def sync_config(payload: ConfigSyncPayload, authorization: str | None = Header(default=None)) -> str:
-    _require_sync_token(authorization)
+    _require_sync_token(authorization, allow_integration=True)
     async with async_session() as session:
         result = await session.execute(select(Config).where(Config.public_sub_token == payload.token))
         config = result.scalar_one_or_none()
@@ -625,7 +625,7 @@ async def sync_panel_settings(payload: PanelSettingsSyncPayload, authorization: 
 
 @app.get("/internal/configs/{token}/metadata", response_class=JSONResponse)
 async def config_metadata(token: str, authorization: str | None = Header(default=None)) -> dict:
-    _require_sync_token(authorization)
+    _require_sync_token(authorization, allow_integration=True)
     config = await _config_for_token(token)
     if not config:
         raise HTTPException(status_code=404, detail="Subscription not found")
@@ -687,11 +687,16 @@ async def make_qr(payload: QRPayload) -> Response:
     return Response(content=image.to_string(encoding="unicode"), media_type="image/svg+xml")
 
 
-def _require_sync_token(authorization: str | None) -> None:
-    if not settings.sync_token:
+def _require_sync_token(authorization: str | None, *, allow_integration: bool = False) -> None:
+    accepted_tokens = [settings.sync_token]
+    if allow_integration:
+        accepted_tokens.append(settings.integration_sync_token)
+    accepted_tokens = [token for token in accepted_tokens if token]
+    if not accepted_tokens:
         raise HTTPException(status_code=403, detail="PANEL_SYNC_TOKEN is not configured")
-    expected = f"Bearer {settings.sync_token}"
-    if not authorization or not secrets.compare_digest(authorization, expected):
+    if not authorization or not any(
+        secrets.compare_digest(authorization, f"Bearer {token}") for token in accepted_tokens
+    ):
         raise HTTPException(status_code=401, detail="Invalid sync token")
 
 
