@@ -49,8 +49,20 @@ jobs:
           SSHPASS: ${{ secrets.SUB_PANEL_PASSWORD }}
           DEPLOY_HOST: ${{ secrets.SUB_PANEL_HOST }}
           DEPLOY_USER: ${{ secrets.SUB_PANEL_USER }}
+          PANEL_INTEGRATION_SYNC_TOKEN: ${{ secrets.PANEL_INTEGRATION_SYNC_TOKEN }}
         run: |
           set -euo pipefail
+
+          if [ -n "${PANEL_INTEGRATION_SYNC_TOKEN}" ]; then
+            printf '%s' "${PANEL_INTEGRATION_SYNC_TOKEN}" | sshpass -e ssh \
+              -o ConnectTimeout=20 \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=3 \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              'umask 077; cat > /tmp/phantom-panel-integration-token'
+          fi
 
           sshpass -e ssh             -o ConnectTimeout=20             -o ServerAliveInterval=15             -o ServerAliveCountMax=3             -o StrictHostKeyChecking=no             -o UserKnownHostsFile=/dev/null             "${DEPLOY_USER}@${DEPLOY_HOST}" 'bash -se' <<'REMOTE'
           set -euo pipefail
@@ -60,6 +72,29 @@ jobs:
 
           test -f .env
           test -d venv
+
+          if [ -f /tmp/phantom-panel-integration-token ]; then
+            integration_token="$(cat /tmp/phantom-panel-integration-token)"
+            rm -f /tmp/phantom-panel-integration-token
+            PANEL_INTEGRATION_SYNC_TOKEN="${integration_token}" ./venv/bin/python - <<'PY'
+from pathlib import Path
+import os
+
+path = Path(".env")
+key = "PANEL_INTEGRATION_SYNC_TOKEN"
+value = os.environ["PANEL_INTEGRATION_SYNC_TOKEN"]
+lines = path.read_text().splitlines()
+updated = False
+for index, line in enumerate(lines):
+    if line.startswith(f"{key}="):
+        lines[index] = f"{key}={value}"
+        updated = True
+        break
+if not updated:
+    lines.append(f"{key}={value}")
+path.write_text("\n".join(lines) + "\n")
+PY
+          fi
 
           git fetch --prune origin main
           git checkout -f main
