@@ -688,7 +688,7 @@ async def make_qr(payload: QRPayload) -> Response:
 
 
 def _require_sync_token(authorization: str | None, *, allow_integration: bool = False) -> None:
-    accepted_tokens = [settings.sync_token]
+    accepted_tokens = [settings.sync_token, *settings.extra_sync_tokens]
     if allow_integration:
         accepted_tokens.append(settings.integration_sync_token)
     accepted_tokens = [token for token in accepted_tokens if token]

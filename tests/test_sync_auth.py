@@ -10,14 +10,26 @@ from phantom_subscription_panel.app import _require_sync_token
 
 class SyncAuthenticationTests(unittest.TestCase):
     def test_primary_token_is_accepted_for_internal_operations(self) -> None:
-        with patch("phantom_subscription_panel.app.settings.sync_token", "primary-token"), patch(
-            "phantom_subscription_panel.app.settings.integration_sync_token", "integration-token"
+        with (
+            patch("phantom_subscription_panel.app.settings.sync_token", "primary-token"),
+            patch("phantom_subscription_panel.app.settings.extra_sync_tokens", []),
+            patch("phantom_subscription_panel.app.settings.integration_sync_token", "integration-token"),
         ):
             _require_sync_token("Bearer primary-token")
 
+    def test_extra_primary_token_is_accepted_for_internal_operations(self) -> None:
+        with (
+            patch("phantom_subscription_panel.app.settings.sync_token", "primary-token"),
+            patch("phantom_subscription_panel.app.settings.extra_sync_tokens", ["extra-token"]),
+            patch("phantom_subscription_panel.app.settings.integration_sync_token", "integration-token"),
+        ):
+            _require_sync_token("Bearer extra-token")
+
     def test_integration_token_only_has_sync_access(self) -> None:
-        with patch("phantom_subscription_panel.app.settings.sync_token", "primary-token"), patch(
-            "phantom_subscription_panel.app.settings.integration_sync_token", "integration-token"
+        with (
+            patch("phantom_subscription_panel.app.settings.sync_token", "primary-token"),
+            patch("phantom_subscription_panel.app.settings.extra_sync_tokens", []),
+            patch("phantom_subscription_panel.app.settings.integration_sync_token", "integration-token"),
         ):
             _require_sync_token("Bearer integration-token", allow_integration=True)
             with self.assertRaises(HTTPException) as rejected:
@@ -26,8 +38,10 @@ class SyncAuthenticationTests(unittest.TestCase):
         self.assertEqual(rejected.exception.status_code, 401)
 
     def test_blank_integration_token_is_not_accepted(self) -> None:
-        with patch("phantom_subscription_panel.app.settings.sync_token", "primary-token"), patch(
-            "phantom_subscription_panel.app.settings.integration_sync_token", ""
+        with (
+            patch("phantom_subscription_panel.app.settings.sync_token", "primary-token"),
+            patch("phantom_subscription_panel.app.settings.extra_sync_tokens", []),
+            patch("phantom_subscription_panel.app.settings.integration_sync_token", ""),
         ):
             with self.assertRaises(HTTPException) as rejected:
                 _require_sync_token("Bearer integration-token", allow_integration=True)

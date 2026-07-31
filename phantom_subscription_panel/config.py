@@ -15,10 +15,16 @@ def _bool_env(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _list_env(name: str) -> list[str]:
+    value = os.getenv(name, "")
+    return [part.strip() for part in value.replace("\n", ",").split(",") if part.strip()]
+
+
 class Settings:
     panel_db_url = os.getenv("PANEL_DB_URL", "sqlite+aiosqlite:////opt/phantom-subscription-panel/panel.db").strip()
     public_base_url = os.getenv("PUBLIC_BASE_URL", "https://api.phantomhubs.shop").strip().rstrip("/")
     sync_token = os.getenv("PANEL_SYNC_TOKEN", "").strip()
+    extra_sync_tokens = _list_env("PANEL_EXTRA_SYNC_TOKENS")
     # A separately revocable token for approved external integrations.
     integration_sync_token = os.getenv("PANEL_INTEGRATION_SYNC_TOKEN", "").strip()
     upstream_verify_tls = _bool_env("UPSTREAM_VERIFY_TLS", False)

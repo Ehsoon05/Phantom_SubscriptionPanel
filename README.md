@@ -21,6 +21,7 @@ and do not enable a JavaScript challenge on those paths.
 PANEL_DB_URL=sqlite+aiosqlite:////opt/phantom-subscription-panel/panel.db
 PUBLIC_BASE_URL=https://api.phantomhubs.shop
 PANEL_SYNC_TOKEN=یک-توکن-خیلی-قوی-و-تصادفی
+PANEL_EXTRA_SYNC_TOKENS=توکن-داخلی-اضافی-اختیاری,توکن-داخلی-دیگر
 PANEL_ADMIN_USERNAME=admin
 PANEL_ADMIN_PASSWORD=change-this-password
 PANEL_SETTINGS_FILE=/opt/phantom-subscription-panel/panel-settings.json
