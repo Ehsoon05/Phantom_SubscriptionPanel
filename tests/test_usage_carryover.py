@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from phantom_subscription_panel.app import _apply_usage_carryover
+from phantom_subscription_panel.app import _apply_usage_carryover, _sync_profile_title
 from phantom_subscription_panel.database import Config
 
 
@@ -56,6 +56,20 @@ class SyncPayloadTests(unittest.TestCase):
         )
 
         self.assertEqual(payload.address_rewrites, "")
+
+    def test_upstream_sync_does_not_overwrite_a_local_profile_title(self) -> None:
+        config = Config(profile_title="PhantomHubs VIP", profile_title_locked=True)
+
+        _sync_profile_title(config, "Provider default")
+
+        self.assertEqual(config.profile_title, "PhantomHubs VIP")
+
+    def test_upstream_sync_updates_an_unlocked_profile_title(self) -> None:
+        config = Config(profile_title="Old provider title", profile_title_locked=False)
+
+        _sync_profile_title(config, "New provider title")
+
+        self.assertEqual(config.profile_title, "New provider title")
 
 
 if __name__ == "__main__":

@@ -96,10 +96,30 @@ async def startup() -> None:
     global _upstream_client
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        profile_title_lock_added = False
         try:
             await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN profile_title VARCHAR"))
         except SQLAlchemyError:
             pass
+        try:
+            await conn.execute(
+                text(
+                    "ALTER TABLE subscription_configs "
+                    "ADD COLUMN profile_title_locked BOOLEAN NOT NULL DEFAULT 0"
+                )
+            )
+            profile_title_lock_added = True
+        except SQLAlchemyError:
+            pass
+        if profile_title_lock_added:
+            # Existing non-empty titles were already configured by an admin or
+            # the bot. Preserve them when the upstream URL is later replaced.
+            await conn.execute(
+                text(
+                    "UPDATE subscription_configs SET profile_title_locked = 1 "
+                    "WHERE profile_title IS NOT NULL AND TRIM(profile_title) <> ''"
+                )
+            )
         try:
             await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN device_limit INTEGER"))
         except SQLAlchemyError:
@@ -376,6 +396,7 @@ async def admin_create_subscription(
         config.service_name = service_name.strip() or None
         config.panel_username = panel_username.strip() or service_name.strip() or None
         config.profile_title = profile_title.strip() or None
+        config.profile_title_locked = bool(config.profile_title)
         config.device_limit = _positive_int(device_limit)
         config.show_header = show_header == "on"
         config.channel_handle = channel_handle.strip() or None
@@ -494,6 +515,7 @@ async def admin_update_subscription_display(
         config = await session.get(Config, config_id)
         if config:
             config.profile_title = profile_title.strip() or None
+            config.profile_title_locked = bool(config.profile_title)
             config.panel_username = panel_username.strip() or None
             config.show_header = show_header == "on"
             config.channel_handle = channel_handle.strip() or None
@@ -518,8 +540,7 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
         config.category_key = payload.category_key
         config.is_sold = payload.is_sold
         config.service_name = payload.service_name
-        if payload.profile_title is not None:
-            config.profile_title = payload.profile_title.strip() or None
+        _sync_profile_title(config, payload.profile_title)
         if payload.panel_username is not None:
             config.panel_username = payload.panel_username.strip() or None
         if payload.telegram_user_id is not None:
@@ -1420,6 +1441,12 @@ def _decode_profile_title(value: str) -> str:
     return unquote(value).strip().strip("\"'")
 
 
+def _sync_profile_title(config: Config, profile_title: str | None) -> None:
+    """Apply an upstream title only when this link has no local override."""
+    if profile_title is not None and not bool(config.profile_title_locked):
+        config.profile_title = profile_title.strip() or None
+
+
 def _content_disposition_title(value: str) -> str:
     match = re.search(r"filename\*?=(?:UTF-8''|)(?:\"([^\"]+)\"|([^;]+))", value, flags=re.IGNORECASE)
     if not match:
@@ -2001,7 +2028,7 @@ async def _render_admin(panel: PanelSettings, notice: str = "", error: str = "")
             ]
         )
         volume_text = "نامحدود" if not config.volume_gb else f"{config.volume_gb} GB"
-        return f"""<article class="sub-card" data-search="{html.escape(search_text.casefold(), quote=True)}"><div class="sub-card-head"><div><strong>{html.escape(config.service_name or "-")}</strong><span>{html.escape(config.profile_title or "نام اختصاصی ندارد")}</span></div><b>{html.escape(volume_text)}</b></div><div class="link-panel"><div><span>لینک ساخته‌شده</span><a class="ltr break" href="{public_url}" target="_blank">{html.escape(public_url)}</a></div><button type="button" class="copy-admin" onclick="copyAdminLink({html.escape(json.dumps(public_url), quote=True)})">کپی لینک</button></div><div class="sub-grid"><form class="inline-form" method="post" action="/admin/subscriptions/{config.id}/device-limit"><label>محدودیت کاربر/دستگاه<input name="device_limit" type="number" min="0" value="{config.device_limit if config.device_limit is not None else 0}" title="0 یعنی نامحدود"></label><button>ثبت</button></form><form class="stack-form" method="post" action="/admin/subscriptions/{config.id}/display"><div class="toggle-row"><label class="tiny-toggle"><input name="show_header" type="checkbox" {header_checked}> هدر</label><label class="tiny-toggle"><input name="show_config_preview" type="checkbox" {preview_checked}> کانفیگ‌ها</label><label class="tiny-toggle"><input name="info_proxies_enabled" type="checkbox" {info_checked}> کانفیگ‌های اطلاعاتی</label></div><label>نام نمایشی داخل برنامه‌ها<input name="profile_title" value="{html.escape(config.profile_title or '')}" placeholder="مثلا PhantomHubs VIP"></label><label>Username پنل برای کانفیگ آدمک<input name="panel_username" value="{html.escape(config.panel_username or '')}" placeholder="مثلا PhantomExpress10GB-VIP1"></label><label>کانال اختصاصی<input name="channel_handle" value="{channel_value}" placeholder="@SupportChannel"></label><label>بازنویسی آدرس کانفیگ<textarea class="ltr" name="address_rewrites" placeholder="es.sv.temas-bor.ir=es.api.bahrevari01.shop">{address_rewrites_value}</textarea><span>هر خط: آدرس فعلی=آدرس جدید؛ پورت و تنظیمات اتصال دست‌نخورده می‌مانند.</span></label><button>ذخیره نمایش</button></form></div><div class="device-panel"><span>دستگاه‌های ثبت‌شده: <b>{device_count}</b></span><form method="post" action="/admin/subscriptions/{config.id}/devices/reset"><button type="submit">ریست شمارش</button></form><form method="post" action="/admin/subscriptions/{config.id}/revoke" onsubmit="return confirm('لینک قبلی باطل و لینک جدید ساخته شود؟')"><button type="submit" class="danger">Revoke لینک</button></form></div><details><summary>لینک اصلی</summary><p class="ltr break">{html.escape(config.sub_link)}</p><form class="replace-form" method="post" action="/admin/subscriptions/{config.id}/upstream" onsubmit="return confirm('لینک اصلی این اشتراک جایگزین شود؟ لینک ساخته‌شده و توکن فعلی حفظ می‌شود.')"><label>جایگزینی لینک اصلی<input name="upstream_url" type="url" required dir="ltr" value="{html.escape(config.sub_link, quote=True)}"></label><button type="submit">جایگزینی لینک اصلی</button></form></details><form class="delete-form" method="post" action="/admin/subscriptions/{config.id}/delete"><button class="danger">حذف</button></form></article>"""
+        return f"""<article class="sub-card" data-search="{html.escape(search_text.casefold(), quote=True)}"><div class="sub-card-head"><div><strong>{html.escape(config.service_name or "-")}</strong><span>{html.escape(config.profile_title or "نام اختصاصی ندارد")}</span></div><b>{html.escape(volume_text)}</b></div><div class="link-panel"><div><span>لینک ساخته‌شده</span><a class="ltr break" href="{public_url}" target="_blank">{html.escape(public_url)}</a></div><button type="button" class="copy-admin" onclick="copyAdminLink({html.escape(json.dumps(public_url), quote=True)})">کپی لینک</button></div><div class="sub-grid"><form class="inline-form" method="post" action="/admin/subscriptions/{config.id}/device-limit"><label>محدودیت کاربر/دستگاه<input name="device_limit" type="number" min="0" value="{config.device_limit if config.device_limit is not None else 0}" title="0 یعنی نامحدود"></label><button>ثبت</button></form><form class="stack-form" method="post" action="/admin/subscriptions/{config.id}/display"><div class="toggle-row"><label class="tiny-toggle"><input name="show_header" type="checkbox" {header_checked}> هدر</label><label class="tiny-toggle"><input name="show_config_preview" type="checkbox" {preview_checked}> کانفیگ‌ها</label><label class="tiny-toggle"><input name="info_proxies_enabled" type="checkbox" {info_checked}> کانفیگ‌های اطلاعاتی</label></div><label>نام نمایشی داخل برنامه‌ها (با ذخیره قفل می‌شود)<input name="profile_title" value="{html.escape(config.profile_title or '')}" placeholder="مثلا PhantomHubs VIP"></label><label>Username پنل برای کانفیگ آدمک<input name="panel_username" value="{html.escape(config.panel_username or '')}" placeholder="مثلا PhantomExpress10GB-VIP1"></label><label>کانال اختصاصی<input name="channel_handle" value="{channel_value}" placeholder="@SupportChannel"></label><label>بازنویسی آدرس کانفیگ<textarea class="ltr" name="address_rewrites" placeholder="es.sv.temas-bor.ir=es.api.bahrevari01.shop">{address_rewrites_value}</textarea><span>هر خط: آدرس فعلی=آدرس جدید؛ پورت و تنظیمات اتصال دست‌نخورده می‌مانند.</span></label><button>ذخیره نمایش</button></form></div><div class="device-panel"><span>دستگاه‌های ثبت‌شده: <b>{device_count}</b></span><form method="post" action="/admin/subscriptions/{config.id}/devices/reset"><button type="submit">ریست شمارش</button></form><form method="post" action="/admin/subscriptions/{config.id}/revoke" onsubmit="return confirm('لینک قبلی باطل و لینک جدید ساخته شود؟')"><button type="submit" class="danger">Revoke لینک</button></form></div><details><summary>لینک اصلی</summary><p class="ltr break">{html.escape(config.sub_link)}</p><form class="replace-form" method="post" action="/admin/subscriptions/{config.id}/upstream" onsubmit="return confirm('لینک اصلی این اشتراک جایگزین شود؟ لینک ساخته‌شده و توکن فعلی حفظ می‌شود.')"><label>جایگزینی لینک اصلی<input name="upstream_url" type="url" required dir="ltr" value="{html.escape(config.sub_link, quote=True)}"></label><button type="submit">جایگزینی لینک اصلی</button></form></details><form class="delete-form" method="post" action="/admin/subscriptions/{config.id}/delete"><button class="danger">حذف</button></form></article>"""
 
     rows = "".join(row(config) for config in configs) or "<div class='empty-admin'>هنوز لینکی ثبت نشده است.</div>"
     flash = f"<div class='notice'>{html.escape(notice)}</div>" if notice else f"<div class='error'>{html.escape(error)}</div>" if error else ""

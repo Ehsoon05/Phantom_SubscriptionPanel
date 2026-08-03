@@ -26,6 +26,9 @@ class Config(Base):
     usage_offset_bytes = Column(BigInteger, nullable=False, default=0)
     display_total_bytes = Column(BigInteger, nullable=True)
     profile_title = Column(String, nullable=True)
+    # A title explicitly chosen in the subscription admin must survive source
+    # replacements and routine upstream synchronisation.
+    profile_title_locked = Column(Boolean, nullable=False, default=False)
     device_limit = Column(Integer, nullable=True)
     device_limit_warning_count = Column(Integer, nullable=False, default=0)
     device_limit_last_warning_at = Column(DateTime, nullable=True)
