@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from phantom_subscription_panel.app import _apply_usage_carryover, _sync_profile_title
+from phantom_subscription_panel.app import (
+    _apply_usage_carryover,
+    _sync_profile_title,
+    _web_title_for_subscription,
+)
 from phantom_subscription_panel.database import Config
 
 
@@ -70,6 +74,37 @@ class SyncPayloadTests(unittest.TestCase):
         _sync_profile_title(config, "New provider title")
 
         self.assertEqual(config.profile_title, "New provider title")
+
+    def test_seller_web_title_uses_the_created_service_name(self) -> None:
+        config = Config(
+            category_key="seller",
+            service_name="Heydari",
+            panel_username="Heydari",
+            profile_title="Phantom Hubs",
+        )
+
+        title = _web_title_for_subscription(
+            config,
+            {"title": "@Ehsoon05"},
+            upstream_web_title="@Ehsoon05",
+        )
+
+        self.assertEqual(title, "Heydari")
+
+    def test_regular_web_title_keeps_the_upstream_page_name(self) -> None:
+        config = Config(
+            category_key="manual",
+            service_name="Local name",
+            profile_title="App name",
+        )
+
+        title = _web_title_for_subscription(
+            config,
+            {"title": "Header name"},
+            upstream_web_title="Original subscription",
+        )
+
+        self.assertEqual(title, "Original subscription")
 
 
 if __name__ == "__main__":

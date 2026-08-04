@@ -215,7 +215,12 @@ async def subscription(token: str, request: Request) -> Response:
 
     upstream = _apply_usage_carryover(config, await _fetch_upstream(config.sub_link))
     if _wants_html(request):
-        web_title = await _fetch_upstream_web_title(config.sub_link)
+        upstream_web_title = await _fetch_upstream_web_title(config.sub_link)
+        web_title = _web_title_for_subscription(
+            config,
+            upstream,
+            upstream_web_title=upstream_web_title,
+        )
         return HTMLResponse(_render_subscription_page(config, upstream, web_title=web_title))
 
     await _enforce_device_limit(config, request)
@@ -1491,10 +1496,26 @@ def _info_title_for_subscription(config: Config, upstream: dict) -> str:
     ).strip()
 
 
-def _web_title_for_subscription(config: Config, upstream: dict) -> str:
+def _web_title_for_subscription(
+    config: Config,
+    upstream: dict,
+    *,
+    upstream_web_title: str = "",
+) -> str:
     panel = load_panel_settings()
+    if (config.category_key or "").strip().casefold() == "seller":
+        return (
+            _usable_subscription_title(config.service_name)
+            or _usable_subscription_title(config.panel_username)
+            or _usable_subscription_title(config.profile_title)
+            or _usable_subscription_title(upstream_web_title)
+            or _usable_subscription_title(upstream["title"])
+            or panel.brand_name
+            or "Phantom Hubs"
+        ).strip()
     return (
-        _usable_subscription_title(upstream["title"])
+        _usable_subscription_title(upstream_web_title)
+        or _usable_subscription_title(upstream["title"])
         or _usable_subscription_title(config.service_name)
         or _usable_subscription_title(config.profile_title)
         or panel.brand_name
