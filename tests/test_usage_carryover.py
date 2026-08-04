@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from phantom_subscription_panel.app import (
     _apply_usage_carryover,
     _sync_profile_title,
     _web_title_for_subscription,
+    _merge_supplemental_bodies,
 )
-from phantom_subscription_panel.database import Config
+from phantom_subscription_panel.database import Config, ConfigSupplement
 
 
 class UsageCarryoverTests(unittest.TestCase):
@@ -105,6 +107,30 @@ class SyncPayloadTests(unittest.TestCase):
         )
 
         self.assertEqual(title, "Original subscription")
+
+    def test_supplement_merge_only_adds_selected_inbound_ports(self) -> None:
+        primary = b"vless://primary@example.com:443#Primary\n"
+        supplement = ConfigSupplement(
+            source_key="rule:1",
+            upstream_url="https://panel.example/sub/user",
+            allowed_ports_json=json.dumps([8880]),
+        )
+        upstream = {
+            "lines": [
+                "vless://info@nasa.com:4241#Info",
+                "vless://temp-a@example.net:8880#Temporary",
+                "vless://temp-b@example.org:8880#Temporary",
+                "vless://other@example.net:7190#Other",
+            ]
+        }
+
+        merged = _merge_supplemental_bodies(primary, [(supplement, upstream)]).decode()
+
+        self.assertIn("primary@example.com:443", merged)
+        self.assertIn("temp-a@example.net:8880", merged)
+        self.assertIn("temp-b@example.org:8880", merged)
+        self.assertNotIn("nasa.com:4241", merged)
+        self.assertNotIn("other@example.net:7190", merged)
 
 
 if __name__ == "__main__":

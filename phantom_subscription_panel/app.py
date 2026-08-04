@@ -23,12 +23,12 @@ from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Resp
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .config import settings
-from .database import Base, Config, SubscriptionDevice, async_session, engine
+from .database import Base, Config, ConfigSupplement, SubscriptionDevice, async_session, engine
 from .panel_settings import PanelSettings, load_panel_settings, save_panel_settings
 
 
@@ -75,6 +75,17 @@ class ConfigSyncPayload(BaseModel):
     show_header: bool | None = None
     channel_handle: str | None = None
     address_rewrites: str | None = None
+
+
+class SupplementPayload(BaseModel):
+    source_key: str
+    upstream_url: str
+    label: str | None = None
+    allowed_ports: list[int] = Field(default_factory=list)
+
+
+class SupplementsSyncPayload(BaseModel):
+    supplements: list[SupplementPayload] = Field(default_factory=list)
 
 
 class PanelSettingsSyncPayload(BaseModel):
@@ -229,6 +240,19 @@ async def subscription(token: str, request: Request) -> Response:
     response_headers.update(upstream["forward_headers"])
     response_headers.update(_subscription_title_headers(_app_title_for_subscription(config, upstream)))
     body = _subscription_body_with_info_proxies(config, upstream)
+    supplements = await _supplements_for_config(config.id)
+    if supplements:
+        supplemental_upstreams = await asyncio.gather(
+            *[_fetch_optional_supplement(item) for item in supplements]
+        )
+        body = _merge_supplemental_bodies(
+            body,
+            [
+                (item, fetched)
+                for item, fetched in zip(supplements, supplemental_upstreams)
+                if fetched is not None
+            ],
+        )
     return Response(
         content=body,
         media_type=upstream["content_type"] or "text/plain; charset=utf-8",
@@ -419,6 +443,7 @@ async def admin_delete_subscription(config_id: int, _: str = Depends(_require_ad
         config = await session.get(Config, config_id)
         if config:
             await _reset_devices_for_token(session, config.public_sub_token)
+            await session.execute(delete(ConfigSupplement).where(ConfigSupplement.config_id == config.id))
             await session.delete(config)
             await session.commit()
     return RedirectResponse("/admin", status_code=303)
@@ -601,10 +626,56 @@ async def delete_synced_config(
             raise HTTPException(status_code=404, detail="Subscription not found")
         upstream_url = config.sub_link
         await _reset_devices_for_token(session, config.public_sub_token)
+        await session.execute(delete(ConfigSupplement).where(ConfigSupplement.config_id == config.id))
         await session.delete(config)
         await session.commit()
     if upstream_url:
         _clear_upstream_cache(upstream_url)
+    return "ok"
+
+
+@app.put("/internal/configs/{token}/supplements", response_class=PlainTextResponse)
+async def sync_config_supplements(
+    token: str,
+    payload: SupplementsSyncPayload,
+    authorization: str | None = Header(default=None),
+) -> str:
+    _require_sync_token(authorization)
+    async with async_session() as session:
+        config = await _config_for_token_in_session(session, token)
+        if not config:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+
+        existing = {
+            row.source_key: row
+            for row in (
+                await session.execute(
+                    select(ConfigSupplement).where(ConfigSupplement.config_id == config.id)
+                )
+            ).scalars().all()
+        }
+        incoming_keys: set[str] = set()
+        for item in payload.supplements:
+            source_key = _clean_supplement_key(item.source_key)
+            upstream_url = item.upstream_url.strip()
+            parsed = urlparse(upstream_url)
+            if not source_key or parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise HTTPException(status_code=422, detail="Invalid supplemental source")
+            incoming_keys.add(source_key)
+            row = existing.get(source_key)
+            if row is None:
+                row = ConfigSupplement(config_id=config.id, source_key=source_key)
+                session.add(row)
+            row.upstream_url = upstream_url
+            row.label = (item.label or "").strip() or None
+            row.allowed_ports_json = json.dumps(
+                sorted({int(port) for port in item.allowed_ports if 1 <= int(port) <= 65535})
+            )
+
+        for source_key, row in existing.items():
+            if source_key not in incoming_keys:
+                await session.delete(row)
+        await session.commit()
     return "ok"
 
 
@@ -734,6 +805,26 @@ async def _config_for_token(token: str) -> Config | None:
 async def _config_for_token_in_session(session, token: str) -> Config | None:
     result = await session.execute(select(Config).where(Config.public_sub_token == token))
     return result.scalar_one_or_none()
+
+
+async def _supplements_for_config(config_id: int) -> list[ConfigSupplement]:
+    async with async_session() as session:
+        return list(
+            (
+                await session.execute(
+                    select(ConfigSupplement)
+                    .where(ConfigSupplement.config_id == config_id)
+                    .order_by(ConfigSupplement.id)
+                )
+            ).scalars().all()
+        )
+
+
+async def _fetch_optional_supplement(item: ConfigSupplement) -> dict | None:
+    try:
+        return await _fetch_upstream(item.upstream_url)
+    except Exception:
+        return None
 
 
 async def _reset_devices_for_token(session, token: str) -> int:
@@ -1084,6 +1175,59 @@ def _decode_subscription_text(body: bytes) -> tuple[str, bool]:
     if any(scheme in candidate.lower() for scheme in CONFIG_SCHEMES):
         return candidate, True
     return text, False
+
+
+def _clean_supplement_key(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.:-]", "", (value or "").strip())[:160]
+
+
+def _supplement_allowed_ports(item: ConfigSupplement) -> set[int]:
+    try:
+        values = json.loads(item.allowed_ports_json or "[]")
+    except (TypeError, ValueError):
+        return set()
+    ports: set[int] = set()
+    for value in values if isinstance(values, list) else []:
+        try:
+            port = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= port <= 65535:
+            ports.add(port)
+    return ports
+
+
+def _merge_supplemental_bodies(
+    primary_body: bytes,
+    supplements: list[tuple[ConfigSupplement, dict]],
+) -> bytes:
+    primary_text, primary_was_base64 = _decode_subscription_text(primary_body)
+    primary_lines = [line.strip() for line in primary_text.splitlines() if line.strip()]
+    if not primary_lines:
+        return primary_body
+
+    merged_lines = list(primary_lines)
+    seen = set(primary_lines)
+    for item, upstream in supplements:
+        allowed_ports = _supplement_allowed_ports(item)
+        for raw_line in upstream.get("lines", []):
+            line = _clean_config_line_display_name(str(raw_line).strip())
+            if not line or line in seen:
+                continue
+            if allowed_ports:
+                try:
+                    port = urlparse(line).port
+                except ValueError:
+                    continue
+                if port not in allowed_ports:
+                    continue
+            merged_lines.append(line)
+            seen.add(line)
+
+    if merged_lines == primary_lines:
+        return primary_body
+    content = "\n".join(merged_lines).strip() + "\n"
+    return base64.b64encode(content.encode("utf-8")) if primary_was_base64 else content.encode("utf-8")
 
 
 def _subscription_body_with_info_proxies(config: Config, upstream: dict) -> bytes:

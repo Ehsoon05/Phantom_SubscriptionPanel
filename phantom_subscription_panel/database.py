@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -53,6 +53,20 @@ class SubscriptionDevice(Base):
     ip_hint = Column(String, nullable=True)
     first_seen_at = Column(DateTime, nullable=False)
     last_seen_at = Column(DateTime, nullable=False)
+
+
+class ConfigSupplement(Base):
+    __tablename__ = "subscription_config_supplements"
+    __table_args__ = (
+        UniqueConstraint("config_id", "source_key", name="uq_config_supplement_source"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    config_id = Column(Integer, ForeignKey("subscription_configs.id"), nullable=False, index=True)
+    source_key = Column(String, nullable=False)
+    label = Column(String, nullable=True)
+    upstream_url = Column(String, nullable=False)
+    allowed_ports_json = Column(String, nullable=True)
 
 
 engine = create_async_engine(settings.panel_db_url, echo=False)
