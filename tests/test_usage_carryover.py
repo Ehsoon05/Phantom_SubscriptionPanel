@@ -8,6 +8,7 @@ from phantom_subscription_panel.app import (
     _sync_profile_title,
     _web_title_for_subscription,
     _merge_supplemental_bodies,
+    _subscription_response_headers,
 )
 from phantom_subscription_panel.database import Config, ConfigSupplement
 
@@ -131,6 +132,34 @@ class SyncPayloadTests(unittest.TestCase):
         self.assertIn("temp-b@example.org:8880", merged)
         self.assertNotIn("nasa.com:4241", merged)
         self.assertNotIn("other@example.net:7190", merged)
+
+    def test_supplement_is_returned_when_primary_subscription_is_empty(self) -> None:
+        supplement = ConfigSupplement(
+            source_key="rule:1",
+            upstream_url="https://panel.example/sub/user",
+            allowed_ports_json=json.dumps([8880]),
+        )
+        upstream = {"lines": ["vless://temp@example.net:8880#Temporary"]}
+
+        merged = _merge_supplemental_bodies(b"", [(supplement, upstream)]).decode()
+
+        self.assertIn("temp@example.net:8880", merged)
+
+    def test_combined_body_gets_its_own_etag(self) -> None:
+        config = Config(profile_title="Phantom Hubs")
+        upstream = {
+            "forward_headers": {
+                "etag": '"upstream-etag"',
+                "last-modified": "Tue, 04 Aug 2026 12:00:00 GMT",
+            },
+            "title": "Provider",
+        }
+
+        headers = _subscription_response_headers(config, upstream, b"combined-body")
+
+        self.assertNotEqual(headers["ETag"], '"upstream-etag"')
+        self.assertNotIn("etag", headers)
+        self.assertNotIn("last-modified", headers)
 
 
 if __name__ == "__main__":

@@ -230,34 +230,25 @@ async def subscription(token: str, request: Request) -> Response:
         raise HTTPException(status_code=404, detail="Subscription not found")
 
     upstream = _apply_usage_carryover(config, await _fetch_upstream(config.sub_link))
+    body = _subscription_body_with_info_proxies(config, upstream)
+    body = await _body_with_supplements(config.id, body)
     if _wants_html(request):
+        preview_upstream = dict(upstream)
+        preview_upstream["body"] = body
+        preview_upstream["lines"] = _subscription_lines(body)
         upstream_web_title = await _fetch_upstream_web_title(config.sub_link)
         web_title = _web_title_for_subscription(
             config,
-            upstream,
+            preview_upstream,
             upstream_web_title=upstream_web_title,
         )
-        return HTMLResponse(_render_subscription_page(config, upstream, web_title=web_title))
+        return HTMLResponse(
+            _render_subscription_page(config, preview_upstream, web_title=web_title)
+        )
 
     await _enforce_device_limit(config, request)
 
-    response_headers = {"Cache-Control": "no-store, no-cache, must-revalidate", "X-Content-Type-Options": "nosniff"}
-    response_headers.update(upstream["forward_headers"])
-    response_headers.update(_subscription_title_headers(_app_title_for_subscription(config, upstream)))
-    body = _subscription_body_with_info_proxies(config, upstream)
-    supplements = await _supplements_for_config(config.id)
-    if supplements:
-        supplemental_upstreams = await asyncio.gather(
-            *[_fetch_optional_supplement(item) for item in supplements]
-        )
-        body = _merge_supplemental_bodies(
-            body,
-            [
-                (item, fetched)
-                for item, fetched in zip(supplements, supplemental_upstreams)
-                if fetched is not None
-            ],
-        )
+    response_headers = _subscription_response_headers(config, upstream, body)
     return Response(
         content=body,
         media_type=upstream["content_type"] or "text/plain; charset=utf-8",
@@ -859,6 +850,23 @@ async def _fetch_optional_supplement(item: ConfigSupplement) -> dict | None:
         return None
 
 
+async def _body_with_supplements(config_id: int, body: bytes) -> bytes:
+    supplements = await _supplements_for_config(config_id)
+    if not supplements:
+        return body
+    supplemental_upstreams = await asyncio.gather(
+        *[_fetch_optional_supplement(item) for item in supplements]
+    )
+    return _merge_supplemental_bodies(
+        body,
+        [
+            (item, fetched)
+            for item, fetched in zip(supplements, supplemental_upstreams)
+            if fetched is not None
+        ],
+    )
+
+
 async def _reset_devices_for_token(session, token: str) -> int:
     result = await session.execute(
         delete(SubscriptionDevice).where(SubscriptionDevice.public_sub_token == token)
@@ -1235,9 +1243,6 @@ def _merge_supplemental_bodies(
 ) -> bytes:
     primary_text, primary_was_base64 = _decode_subscription_text(primary_body)
     primary_lines = [line.strip() for line in primary_text.splitlines() if line.strip()]
-    if not primary_lines:
-        return primary_body
-
     merged_lines = list(primary_lines)
     seen = set(primary_lines)
     for item, upstream in supplements:
@@ -1260,6 +1265,19 @@ def _merge_supplemental_bodies(
         return primary_body
     content = "\n".join(merged_lines).strip() + "\n"
     return base64.b64encode(content.encode("utf-8")) if primary_was_base64 else content.encode("utf-8")
+
+
+def _subscription_response_headers(config: Config, upstream: dict, body: bytes) -> dict[str, str]:
+    headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "X-Content-Type-Options": "nosniff",
+    }
+    headers.update(upstream["forward_headers"])
+    headers.pop("etag", None)
+    headers.pop("last-modified", None)
+    headers["ETag"] = f'"{hashlib.sha256(body).hexdigest()}"'
+    headers.update(_subscription_title_headers(_app_title_for_subscription(config, upstream)))
+    return headers
 
 
 def _subscription_body_with_info_proxies(config: Config, upstream: dict) -> bytes:
