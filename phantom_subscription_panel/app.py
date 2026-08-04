@@ -604,8 +604,10 @@ async def list_synced_configs(authorization: str | None = Header(default=None)) 
         rows = (
             await session.execute(select(Config).order_by(Config.id))
         ).scalars().all()
-    return {
-        "configs": [
+    configs = []
+    for row in rows:
+        metadata = _cached_subscription_metadata(row)
+        configs.append(
             {
                 "token": row.public_sub_token,
                 "upstream_url": row.sub_link,
@@ -616,10 +618,10 @@ async def list_synced_configs(authorization: str | None = Header(default=None)) 
                 "panel_username": row.panel_username,
                 "source_panel_key": row.source_panel_key,
                 "telegram_user_id": row.telegram_user_id,
+                **metadata,
             }
-            for row in rows
-        ]
-    }
+        )
+    return {"configs": configs}
 
 
 @app.post("/internal/configs/{token}/devices/reset", response_class=PlainTextResponse)
@@ -750,19 +752,8 @@ async def config_metadata(token: str, authorization: str | None = Header(default
     if not config:
         raise HTTPException(status_code=404, detail="Subscription not found")
     upstream = _apply_usage_carryover(config, await _fetch_upstream(config.sub_link))
-    usage = upstream["usage"]
-    used = usage.get("upload", 0) + usage.get("download", 0)
-    total = usage.get("total", 0) or max(config.volume_gb, 0) * 1024**3
     return {
-        "title": upstream["title"],
-        "upload": usage.get("upload", 0),
-        "download": usage.get("download", 0),
-        "used": used,
-        "total": total,
-        "remaining": max(total - used, 0) if total else 0,
-        "expire": usage.get("expire"),
-        "config_count": len(upstream["lines"]),
-        "status": "active",
+        **_subscription_metadata(config, upstream),
         "public_url": f"{settings.public_base_url}/token/{quote(token, safe='')}",
     }
 
@@ -1028,6 +1019,44 @@ def _read_upstream_cache(url: str) -> dict | None:
         return cached
     except (OSError, KeyError, TypeError, ValueError, binascii.Error, json.JSONDecodeError):
         return None
+
+
+def _subscription_metadata(config: Config, upstream: dict) -> dict:
+    usage = upstream.get("usage") or {}
+    upload = int(usage.get("upload") or 0)
+    download = int(usage.get("download") or 0)
+    used = upload + download
+    total = int(usage.get("total") or 0) or max(int(config.volume_gb or 0), 0) * 1024**3
+    expire = int(usage.get("expire") or 0)
+    expired = (expire > 0 and expire <= int(time.time())) or (total > 0 and used >= total)
+    return {
+        "title": str(upstream.get("title") or ""),
+        "upload": upload,
+        "download": download,
+        "used": used,
+        "total": total,
+        "remaining": max(total - used, 0) if total else 0,
+        "expire": expire,
+        "config_count": len(upstream.get("lines") or []),
+        "status": "expired" if expired else "active",
+    }
+
+
+def _cached_subscription_metadata(config: Config) -> dict:
+    upstream = _read_upstream_cache(config.sub_link)
+    if upstream is None:
+        return {"cache_available": False}
+    adjusted = _apply_usage_carryover(config, upstream)
+    metadata = _subscription_metadata(config, adjusted)
+    return {
+        "cache_available": True,
+        "upstream_title": metadata["title"],
+        "upstream_status": metadata["status"],
+        "upstream_total_bytes": metadata["total"],
+        "upstream_used_bytes": metadata["used"],
+        "upstream_expire": metadata["expire"],
+        "upstream_config_count": metadata["config_count"],
+    }
 
 
 def _write_upstream_cache(url: str, upstream: dict) -> None:

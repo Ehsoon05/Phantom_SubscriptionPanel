@@ -9,6 +9,7 @@ from phantom_subscription_panel.app import (
     _web_title_for_subscription,
     _merge_supplemental_bodies,
     _subscription_response_headers,
+    _subscription_metadata,
 )
 from phantom_subscription_panel.database import Config, ConfigSupplement
 
@@ -160,6 +161,19 @@ class SyncPayloadTests(unittest.TestCase):
         self.assertNotEqual(headers["ETag"], '"upstream-etag"')
         self.assertNotIn("etag", headers)
         self.assertNotIn("last-modified", headers)
+
+    def test_cached_metadata_marks_expired_volume_as_expired(self) -> None:
+        config = Config(volume_gb=10)
+        upstream = {
+            "usage": {"upload": 4 * 1024**3, "download": 6 * 1024**3, "total": 0},
+            "lines": ["vless://example"],
+            "title": "Example",
+        }
+
+        metadata = _subscription_metadata(config, upstream)
+
+        self.assertEqual(metadata["status"], "expired")
+        self.assertEqual(metadata["total"], 10 * 1024**3)
 
 
 if __name__ == "__main__":
