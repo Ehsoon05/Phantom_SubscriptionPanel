@@ -22,6 +22,7 @@ class Config(Base):
     is_sold = Column(Boolean, default=False)
     service_name = Column(String, nullable=True)
     panel_username = Column(String, nullable=True)
+    source_panel_key = Column(String, nullable=True, index=True)
     telegram_user_id = Column(BigInteger, nullable=True)
     usage_offset_bytes = Column(BigInteger, nullable=False, default=0)
     display_total_bytes = Column(BigInteger, nullable=True)

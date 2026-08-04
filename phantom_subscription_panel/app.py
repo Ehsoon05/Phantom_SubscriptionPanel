@@ -65,6 +65,7 @@ class ConfigSyncPayload(BaseModel):
     is_sold: bool = False
     service_name: str | None = None
     panel_username: str | None = None
+    source_panel_key: str | None = None
     profile_title: str | None = None
     telegram_user_id: int | None = None
     usage_offset_bytes: int | None = None
@@ -153,6 +154,10 @@ async def startup() -> None:
             pass
         try:
             await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN panel_username VARCHAR"))
+        except SQLAlchemyError:
+            pass
+        try:
+            await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN source_panel_key VARCHAR"))
         except SQLAlchemyError:
             pass
         try:
@@ -573,6 +578,8 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
         _sync_profile_title(config, payload.profile_title)
         if payload.panel_username is not None:
             config.panel_username = payload.panel_username.strip() or None
+        if payload.source_panel_key is not None:
+            config.source_panel_key = payload.source_panel_key.strip() or None
         if payload.telegram_user_id is not None:
             config.telegram_user_id = int(payload.telegram_user_id)
         if payload.usage_offset_bytes is not None:
@@ -597,6 +604,31 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
         await session.commit()
     _schedule_cache_refresh(payload.upstream_url)
     return "ok"
+
+
+@app.get("/internal/configs", response_class=JSONResponse)
+async def list_synced_configs(authorization: str | None = Header(default=None)) -> dict:
+    _require_sync_token(authorization)
+    async with async_session() as session:
+        rows = (
+            await session.execute(select(Config).order_by(Config.id))
+        ).scalars().all()
+    return {
+        "configs": [
+            {
+                "token": row.public_sub_token,
+                "upstream_url": row.sub_link,
+                "volume_gb": int(row.volume_gb or 0),
+                "category_key": row.category_key or "manual",
+                "is_sold": bool(row.is_sold),
+                "service_name": row.service_name,
+                "panel_username": row.panel_username,
+                "source_panel_key": row.source_panel_key,
+                "telegram_user_id": row.telegram_user_id,
+            }
+            for row in rows
+        ]
+    }
 
 
 @app.post("/internal/configs/{token}/devices/reset", response_class=PlainTextResponse)
