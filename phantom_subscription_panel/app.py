@@ -1710,10 +1710,11 @@ def _usable_web_subscription_title(value: str | None) -> str:
 def _app_title_for_subscription(config: Config, upstream: dict) -> str:
     panel = load_panel_settings()
     return (
-        _usable_subscription_title(config.profile_title)
-        or _usable_subscription_title(panel.subscription_profile_title)
-        or _usable_subscription_title(config.service_name)
-        or _usable_subscription_title(upstream["title"])
+        _usable_web_subscription_title(config.profile_title)
+        or _usable_web_subscription_title(panel.subscription_profile_title)
+        or _usable_web_subscription_title(config.service_name)
+        or _usable_web_subscription_title(config.panel_username)
+        or _usable_web_subscription_title(upstream["title"])
         or panel.brand_name
         or "Phantom Hubs"
     ).strip()
@@ -1721,8 +1722,8 @@ def _app_title_for_subscription(config: Config, upstream: dict) -> str:
 
 def _info_title_for_subscription(config: Config, upstream: dict) -> str:
     return (
-        _usable_subscription_title(config.panel_username)
-        or _usable_subscription_title(config.service_name)
+        _usable_web_subscription_title(config.panel_username)
+        or _usable_web_subscription_title(config.service_name)
         or _app_title_for_subscription(config, upstream)
     ).strip()
 

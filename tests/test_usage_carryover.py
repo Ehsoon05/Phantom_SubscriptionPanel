@@ -5,6 +5,7 @@ import unittest
 
 from phantom_subscription_panel.app import (
     _apply_usage_carryover,
+    _app_title_for_subscription,
     _sync_profile_title,
     _web_title_for_subscription,
     _merge_supplemental_bodies,
@@ -121,6 +122,14 @@ class SyncPayloadTests(unittest.TestCase):
         )
 
         self.assertEqual(title, "Express 30GB")
+
+    def test_app_title_ignores_a_telegram_handle(self) -> None:
+        config = Config(profile_title="@Ehsoon05", service_name="Express 30GB")
+
+        self.assertEqual(
+            _app_title_for_subscription(config, {"title": "@Ehsoon05"}),
+            "Express 30GB",
+        )
 
     def test_supplement_merge_only_adds_selected_inbound_ports(self) -> None:
         primary = b"vless://primary@example.com:443#Primary\n"
