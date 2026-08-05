@@ -95,10 +95,11 @@ class SyncPayloadTests(unittest.TestCase):
 
         self.assertEqual(title, "Heydari")
 
-    def test_regular_web_title_keeps_the_upstream_page_name(self) -> None:
+    def test_regular_web_title_uses_panel_username_before_upstream_page_name(self) -> None:
         config = Config(
             category_key="manual",
             service_name="Local name",
+            panel_username="Panel username",
             profile_title="App name",
         )
 
@@ -108,7 +109,18 @@ class SyncPayloadTests(unittest.TestCase):
             upstream_web_title="Original subscription",
         )
 
-        self.assertEqual(title, "Original subscription")
+        self.assertEqual(title, "Panel username")
+
+    def test_regular_web_title_ignores_an_upstream_telegram_handle(self) -> None:
+        config = Config(category_key="manual", service_name="Express 30GB")
+
+        title = _web_title_for_subscription(
+            config,
+            {"title": "@Ehsoon05"},
+            upstream_web_title="@Ehsoon05",
+        )
+
+        self.assertEqual(title, "Express 30GB")
 
     def test_supplement_merge_only_adds_selected_inbound_ports(self) -> None:
         primary = b"vless://primary@example.com:443#Primary\n"

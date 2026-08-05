@@ -1699,6 +1699,14 @@ def _usable_subscription_title(value: str | None) -> str:
     return title
 
 
+def _usable_web_subscription_title(value: str | None) -> str:
+    """Ignore Telegram handles accidentally returned as upstream profile titles."""
+    title = _usable_subscription_title(value)
+    if title.startswith("@"):
+        return ""
+    return title
+
+
 def _app_title_for_subscription(config: Config, upstream: dict) -> str:
     panel = load_panel_settings()
     return (
@@ -1728,19 +1736,20 @@ def _web_title_for_subscription(
     panel = load_panel_settings()
     if (config.category_key or "").strip().casefold() == "seller":
         return (
-            _usable_subscription_title(config.service_name)
-            or _usable_subscription_title(config.panel_username)
-            or _usable_subscription_title(config.profile_title)
-            or _usable_subscription_title(upstream_web_title)
-            or _usable_subscription_title(upstream["title"])
+            _usable_web_subscription_title(config.service_name)
+            or _usable_web_subscription_title(config.panel_username)
+            or _usable_web_subscription_title(upstream_web_title)
+            or _usable_web_subscription_title(upstream["title"])
+            or _usable_web_subscription_title(config.profile_title)
             or panel.brand_name
             or "Phantom Hubs"
         ).strip()
     return (
-        _usable_subscription_title(upstream_web_title)
-        or _usable_subscription_title(upstream["title"])
-        or _usable_subscription_title(config.service_name)
-        or _usable_subscription_title(config.profile_title)
+        _usable_web_subscription_title(config.panel_username)
+        or _usable_web_subscription_title(config.service_name)
+        or _usable_web_subscription_title(upstream_web_title)
+        or _usable_web_subscription_title(upstream["title"])
+        or _usable_web_subscription_title(config.profile_title)
         or panel.brand_name
         or "Phantom Hubs"
     ).strip()
