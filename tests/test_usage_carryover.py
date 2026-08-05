@@ -9,6 +9,7 @@ from phantom_subscription_panel.app import (
     _sync_profile_title,
     _web_title_for_subscription,
     _merge_supplemental_bodies,
+    _panel_username_from_upstream,
     _subscription_response_headers,
     _subscription_metadata,
 )
@@ -54,6 +55,17 @@ class UsageCarryoverTests(unittest.TestCase):
 
 
 class SyncPayloadTests(unittest.TestCase):
+    def test_extracts_pasarguard_username_from_information_config(self) -> None:
+        username = _panel_username_from_upstream(
+            {
+                "lines": [
+                    "vless://id@example.com:443#%F0%9F%8C%9F%20PhantomHubs-Unlimited%40ameireza%20%2026.9%20GB%2F%E2%88%9E%20%F0%9F%93%8A"
+                ]
+            }
+        )
+
+        self.assertEqual(username, "PhantomHubs-Unlimited@ameireza")
+
     def test_sync_payload_accepts_explicit_empty_address_rewrites(self) -> None:
         from phantom_subscription_panel.app import ConfigSyncPayload
 

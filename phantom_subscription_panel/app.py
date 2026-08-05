@@ -1031,6 +1031,7 @@ def _subscription_metadata(config: Config, upstream: dict) -> dict:
     expired = (expire > 0 and expire <= int(time.time())) or (total > 0 and used >= total)
     return {
         "title": str(upstream.get("title") or ""),
+        "panel_username": _panel_username_from_upstream(upstream),
         "upload": upload,
         "download": download,
         "used": used,
@@ -1051,12 +1052,26 @@ def _cached_subscription_metadata(config: Config) -> dict:
     return {
         "cache_available": True,
         "upstream_title": metadata["title"],
+        "upstream_panel_username": metadata["panel_username"],
         "upstream_status": metadata["status"],
         "upstream_total_bytes": metadata["total"],
         "upstream_used_bytes": metadata["used"],
         "upstream_expire": metadata["expire"],
         "upstream_config_count": metadata["config_count"],
     }
+
+
+def _panel_username_from_upstream(upstream: dict) -> str:
+    for line in upstream.get("lines") or []:
+        fragment = unquote(urlparse(str(line)).fragment).strip()
+        match = re.search(
+            r"(?:^|\s)([A-Za-z][A-Za-z0-9_.@-]{2,})\s+\d+(?:\.\d+)?\s*(?:GB|MB)(?:/|\b)",
+            fragment,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return match.group(1).strip()
+    return ""
 
 
 def _write_upstream_cache(url: str, upstream: dict) -> None:
