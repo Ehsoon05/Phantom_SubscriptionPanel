@@ -619,6 +619,7 @@ async def list_synced_configs(authorization: str | None = Header(default=None)) 
                 "source_panel_key": row.source_panel_key,
                 "telegram_user_id": row.telegram_user_id,
                 "device_limit": row.device_limit,
+                "display_total_bytes": row.display_total_bytes,
                 **metadata,
             }
         )
