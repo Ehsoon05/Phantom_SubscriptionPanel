@@ -1732,9 +1732,14 @@ def _usable_web_subscription_title(value: str | None) -> str:
 
 def _app_title_for_subscription(config: Config, upstream: dict) -> str:
     panel = load_panel_settings()
+    configured_title = (
+        _usable_subscription_title(config.profile_title)
+        if bool(config.profile_title_locked)
+        else _usable_web_subscription_title(config.profile_title)
+    )
     return (
-        _usable_web_subscription_title(config.profile_title)
-        or _usable_web_subscription_title(panel.subscription_profile_title)
+        configured_title
+        or _usable_subscription_title(panel.subscription_profile_title)
         or _usable_web_subscription_title(config.service_name)
         or _usable_web_subscription_title(config.panel_username)
         or _usable_web_subscription_title(upstream["title"])

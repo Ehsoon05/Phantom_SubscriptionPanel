@@ -170,6 +170,18 @@ class SyncPayloadTests(unittest.TestCase):
             "Express 30GB",
         )
 
+    def test_app_title_keeps_an_explicit_locked_handle(self) -> None:
+        config = Config(
+            profile_title="@LidsoNet",
+            profile_title_locked=True,
+            service_name="Express 30GB",
+        )
+
+        self.assertEqual(
+            _app_title_for_subscription(config, {"title": "Provider title"}),
+            "@LidsoNet",
+        )
+
     def test_supplement_merge_only_adds_selected_inbound_ports(self) -> None:
         primary = b"vless://primary@example.com:443#Primary\n"
         supplement = ConfigSupplement(
