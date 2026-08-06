@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from phantom_subscription_panel.app import (
     _apply_usage_carryover,
@@ -165,10 +167,14 @@ class SyncPayloadTests(unittest.TestCase):
     def test_app_title_ignores_a_telegram_handle(self) -> None:
         config = Config(profile_title="@Ehsoon05", service_name="Express 30GB")
 
-        self.assertEqual(
-            _app_title_for_subscription(config, {"title": "@Ehsoon05"}),
-            "Express 30GB",
-        )
+        with patch(
+            "phantom_subscription_panel.app.load_panel_settings",
+            return_value=SimpleNamespace(subscription_profile_title="", brand_name="Phantom Hubs"),
+        ):
+            self.assertEqual(
+                _app_title_for_subscription(config, {"title": "@Ehsoon05"}),
+                "Express 30GB",
+            )
 
     def test_app_title_keeps_an_explicit_locked_handle(self) -> None:
         config = Config(
@@ -181,6 +187,21 @@ class SyncPayloadTests(unittest.TestCase):
             _app_title_for_subscription(config, {"title": "Provider title"}),
             "@LidsoNet",
         )
+
+    def test_app_title_keeps_the_explicit_panel_default(self) -> None:
+        config = Config(service_name="Express 30GB")
+
+        with patch(
+            "phantom_subscription_panel.app.load_panel_settings",
+            return_value=SimpleNamespace(
+                subscription_profile_title="@PhantomHubs",
+                brand_name="Phantom Hubs",
+            ),
+        ):
+            self.assertEqual(
+                _app_title_for_subscription(config, {"title": "Provider title"}),
+                "@PhantomHubs",
+            )
 
     def test_supplement_merge_only_adds_selected_inbound_ports(self) -> None:
         primary = b"vless://primary@example.com:443#Primary\n"
