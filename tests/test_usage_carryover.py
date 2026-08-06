@@ -53,6 +53,33 @@ class UsageCarryoverTests(unittest.TestCase):
 
         self.assertIs(_apply_usage_carryover(config, upstream), upstream)
 
+    def test_explicit_zero_display_total_hides_real_upstream_cap(self) -> None:
+        config = Config(
+            volume_gb=0,
+            sub_link="https://provider.example/sub/unlimited",
+            usage_offset_bytes=0,
+            display_total_bytes=0,
+        )
+        upstream = {
+            "body": b"",
+            "lines": [],
+            "title": "Unlimited",
+            "usage": {
+                "upload": 10 * 1024**3,
+                "download": 5 * 1024**3,
+                "total": 300 * 1024**3,
+                "expire": 0,
+            },
+            "forward_headers": {},
+        }
+
+        adjusted = _apply_usage_carryover(config, upstream)
+        metadata = _subscription_metadata(config, adjusted)
+
+        self.assertEqual(adjusted["usage"]["total"], 0)
+        self.assertEqual(metadata["total"], 0)
+        self.assertEqual(metadata["status"], "active")
+
 
 class SyncPayloadTests(unittest.TestCase):
     def test_extracts_pasarguard_username_from_information_config(self) -> None:

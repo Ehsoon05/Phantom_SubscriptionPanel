@@ -577,7 +577,7 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
             config.usage_offset_bytes = max(0, int(payload.usage_offset_bytes))
         if payload.display_total_bytes is not None:
             total = max(0, int(payload.display_total_bytes))
-            config.display_total_bytes = total or None
+            config.display_total_bytes = total
         if payload.device_limit is not None:
             config.device_limit = max(0, int(payload.device_limit))
         if payload.show_config_preview is not None:
@@ -618,6 +618,7 @@ async def list_synced_configs(authorization: str | None = Header(default=None)) 
                 "panel_username": row.panel_username,
                 "source_panel_key": row.source_panel_key,
                 "telegram_user_id": row.telegram_user_id,
+                "device_limit": row.device_limit,
                 **metadata,
             }
         )
@@ -1021,12 +1022,18 @@ def _read_upstream_cache(url: str) -> dict | None:
         return None
 
 
+def _display_total_bytes(config: Config, usage: dict) -> int:
+    if config.display_total_bytes is not None:
+        return max(0, int(config.display_total_bytes))
+    return int(usage.get("total") or 0) or max(int(config.volume_gb or 0), 0) * 1024**3
+
+
 def _subscription_metadata(config: Config, upstream: dict) -> dict:
     usage = upstream.get("usage") or {}
     upload = int(usage.get("upload") or 0)
     download = int(usage.get("download") or 0)
     used = upload + download
-    total = int(usage.get("total") or 0) or max(int(config.volume_gb or 0), 0) * 1024**3
+    total = _display_total_bytes(config, usage)
     expire = int(usage.get("expire") or 0)
     expired = (expire > 0 and expire <= int(time.time())) or (total > 0 and used >= total)
     return {
@@ -1389,7 +1396,7 @@ def _rewritten_subscription_lines(config: Config, upstream: dict) -> list[str]:
 def _info_proxy_lines(config: Config, upstream: dict) -> list[str]:
     usage = upstream.get("usage") or {}
     used = int(usage.get("upload", 0) or 0) + int(usage.get("download", 0) or 0)
-    total = int(usage.get("total", 0) or 0) or max(int(config.volume_gb or 0), 0) * 1024**3
+    total = _display_total_bytes(config, usage)
     remaining_bytes = max(total - used, 0) if total > 0 else 0
     remaining_label = "نامحدود" if total <= 0 else _format_gb_compact(remaining_bytes)
     days_label = _remaining_days_label(usage.get("expire"))
@@ -2194,7 +2201,7 @@ def _render_subscription_page(config: Config, upstream: dict, web_title: str = "
     channel_handle = (config.channel_handle or panel.channel_handle).strip()
     usage = upstream["usage"]
     used = usage.get("upload", 0) + usage.get("download", 0)
-    total = usage.get("total", 0) or max(config.volume_gb, 0) * 1024**3
+    total = _display_total_bytes(config, usage)
     remaining = max(total - used, 0) if total else 0
     percent = min(round(used / total * 100), 100) if total else 0
     expire = usage.get("expire")
@@ -2226,7 +2233,7 @@ def _render_subscription_page(config: Config, upstream: dict, web_title: str = "
     channel_url = f"https://t.me/{channel_handle.lstrip('@')}"
     app_title = _app_title_for_subscription(config, upstream)
     title = html.escape(web_title or _web_title_for_subscription(config, upstream))
-    upstream_total = usage.get("total", 0)
+    upstream_total = _display_total_bytes(config, usage)
     purchased_volume = _format_compact_gb(upstream_total) if upstream_total else (
         f"{config.volume_gb}GB" if config.volume_gb else "نامحدود"
     )
