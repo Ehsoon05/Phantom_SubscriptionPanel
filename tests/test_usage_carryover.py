@@ -5,6 +5,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from starlette.requests import Request
+
 from phantom_subscription_panel.app import (
     _apply_usage_carryover,
     _app_title_for_subscription,
@@ -12,6 +14,7 @@ from phantom_subscription_panel.app import (
     _web_title_for_subscription,
     _merge_supplemental_bodies,
     _panel_username_from_upstream,
+    _request_etag_matches,
     _subscription_response_headers,
     _subscription_metadata,
 )
@@ -254,6 +257,19 @@ class SyncPayloadTests(unittest.TestCase):
         self.assertNotEqual(headers["ETag"], '"upstream-etag"')
         self.assertNotIn("etag", headers)
         self.assertNotIn("last-modified", headers)
+
+    def test_conditional_subscription_request_accepts_strong_and_weak_etags(self) -> None:
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/token/test",
+                "headers": [(b"if-none-match", b'W/"current", "older"')],
+            }
+        )
+
+        self.assertTrue(_request_etag_matches(request, '"current"'))
+        self.assertFalse(_request_etag_matches(request, '"different"'))
 
     def test_cached_metadata_marks_expired_volume_as_expired(self) -> None:
         config = Config(volume_gb=10)

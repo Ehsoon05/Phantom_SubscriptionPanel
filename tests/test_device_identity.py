@@ -163,6 +163,30 @@ class DeviceLimitTests(unittest.IsolatedAsyncioTestCase):
             count = await session.scalar(select(func.count(SubscriptionDevice.id)))
         self.assertEqual(count, 1)
 
+    async def test_repeat_refresh_does_not_rewrite_recent_device_activity(self) -> None:
+        config = await self._config(token="throttled-activity", limit=1)
+        request = _request(
+            user_agent="Hiddify/4.0",
+            hwid="device-000001",
+            ip="192.0.2.1",
+        )
+
+        with (
+            patch("phantom_subscription_panel.app.async_session", self.session_factory),
+            patch(
+                "phantom_subscription_panel.app.settings.device_last_seen_write_interval_seconds",
+                3600,
+            ),
+        ):
+            await _enforce_device_limit(config, request)
+            async with self.session_factory() as session:
+                first_seen = await session.scalar(select(SubscriptionDevice.last_seen_at))
+            await _enforce_device_limit(config, request)
+
+        async with self.session_factory() as session:
+            second_seen = await session.scalar(select(SubscriptionDevice.last_seen_at))
+        self.assertEqual(second_seen, first_seen)
+
     async def test_same_client_can_upgrade_to_explicit_identifier(self) -> None:
         config = await self._config(token="identity-upgrade", limit=1)
         first = _request(

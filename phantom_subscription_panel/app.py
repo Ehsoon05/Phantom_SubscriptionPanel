@@ -249,6 +249,8 @@ async def subscription(token: str, request: Request) -> Response:
     await _enforce_device_limit(config, request)
 
     response_headers = _subscription_response_headers(config, upstream, body)
+    if _request_etag_matches(request, response_headers["ETag"]):
+        return Response(status_code=304, headers=response_headers)
     return Response(
         content=body,
         media_type=upstream["content_type"] or "text/plain; charset=utf-8",
@@ -1321,7 +1323,7 @@ def _merge_supplemental_bodies(
 
 def _subscription_response_headers(config: Config, upstream: dict, body: bytes) -> dict[str, str]:
     headers = {
-        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Cache-Control": "private, no-cache, must-revalidate",
         "X-Content-Type-Options": "nosniff",
     }
     headers.update(upstream["forward_headers"])
@@ -1330,6 +1332,19 @@ def _subscription_response_headers(config: Config, upstream: dict, body: bytes) 
     headers["ETag"] = f'"{hashlib.sha256(body).hexdigest()}"'
     headers.update(_subscription_title_headers(_app_title_for_subscription(config, upstream)))
     return headers
+
+
+def _request_etag_matches(request: Request, current_etag: str) -> bool:
+    requested = request.headers.get("if-none-match", "").strip()
+    if not requested:
+        return False
+    if requested == "*":
+        return True
+    normalized_current = current_etag.removeprefix("W/").strip()
+    return any(
+        candidate.strip().removeprefix("W/").strip() == normalized_current
+        for candidate in requested.split(",")
+    )
 
 
 def _subscription_body_with_info_proxies(config: Config, upstream: dict) -> bytes:
@@ -2054,6 +2069,8 @@ async def _enforce_device_limit(config: Config, request: Request) -> None:
         )
         existing = matches[0] if matches else None
         if existing is not None:
+            previous_fingerprint = existing.fingerprint or ""
+            previous_aliases_json = existing.fingerprint_aliases_json or ""
             cleanup_matches = {
                 device.id: device
                 for device in [*matches, *legacy_family_matches, *ua_migration_matches]
@@ -2073,6 +2090,22 @@ async def _enforce_device_limit(config: Config, request: Request) -> None:
             if not (existing.fingerprint or "").startswith("v2:"):
                 existing.fingerprint = fingerprint
             _set_device_fingerprint_aliases(existing, aliases)
+            identity_changed = (
+                bool(duplicate_ids)
+                or (existing.fingerprint or "") != previous_fingerprint
+                or (existing.fingerprint_aliases_json or "") != previous_aliases_json
+            )
+            last_seen = _as_aware(existing.last_seen_at)
+            write_interval = max(
+                60,
+                int(settings.device_last_seen_write_interval_seconds or 900),
+            )
+            activity_refresh_due = (
+                last_seen is None
+                or (now - last_seen).total_seconds() >= write_interval
+            )
+            if not identity_changed and not activity_refresh_due:
+                return
             existing.user_agent = user_agent
             existing.ip_hint = ip_hint
             existing.last_seen_at = now
@@ -2105,6 +2138,7 @@ async def _enforce_device_limit(config: Config, request: Request) -> None:
             SubscriptionDevice(
                 public_sub_token=config.public_sub_token,
                 fingerprint=fingerprint,
+                fingerprint_aliases_json="[]",
                 user_agent=user_agent,
                 ip_hint=ip_hint,
                 first_seen_at=now,
