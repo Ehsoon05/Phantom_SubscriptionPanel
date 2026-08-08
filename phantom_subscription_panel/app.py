@@ -557,14 +557,16 @@ async def admin_update_subscription_display(
 @app.post("/internal/configs", response_class=PlainTextResponse)
 async def sync_config(payload: ConfigSyncPayload, authorization: str | None = Header(default=None)) -> str:
     _require_sync_token(authorization, allow_integration=True)
+    source_panel_key = payload.source_panel_key.strip() if payload.source_panel_key is not None else None
+    volume_gb = 0 if source_panel_key == "mexico_namahdod" else payload.volume_gb
     async with async_session() as session:
         result = await session.execute(select(Config).where(Config.public_sub_token == payload.token))
         config = result.scalar_one_or_none()
         if config is None:
-            config = Config(public_sub_token=payload.token, sub_link=payload.upstream_url, volume_gb=payload.volume_gb)
+            config = Config(public_sub_token=payload.token, sub_link=payload.upstream_url, volume_gb=volume_gb)
             session.add(config)
         config.sub_link = payload.upstream_url
-        config.volume_gb = payload.volume_gb
+        config.volume_gb = volume_gb
         config.category_key = payload.category_key
         config.is_sold = payload.is_sold
         config.service_name = payload.service_name
@@ -572,12 +574,14 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
         if payload.panel_username is not None:
             config.panel_username = payload.panel_username.strip() or None
         if payload.source_panel_key is not None:
-            config.source_panel_key = payload.source_panel_key.strip() or None
+            config.source_panel_key = source_panel_key or None
         if payload.telegram_user_id is not None:
             config.telegram_user_id = int(payload.telegram_user_id)
         if payload.usage_offset_bytes is not None:
             config.usage_offset_bytes = max(0, int(payload.usage_offset_bytes))
-        if payload.display_total_bytes is not None:
+        if source_panel_key == "mexico_namahdod":
+            config.display_total_bytes = 0
+        elif payload.display_total_bytes is not None:
             total = max(0, int(payload.display_total_bytes))
             config.display_total_bytes = total
         if payload.device_limit is not None:
