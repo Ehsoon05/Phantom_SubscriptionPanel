@@ -132,6 +132,14 @@ async def startup() -> None:
                     "WHERE profile_title IS NOT NULL AND TRIM(profile_title) <> ''"
                 )
             )
+        else:
+            await conn.execute(
+                text(
+                    "UPDATE subscription_configs SET profile_title_locked = 1 "
+                    "WHERE profile_title_locked = 0 "
+                    "AND profile_title IS NOT NULL AND TRIM(profile_title) <> ''"
+                )
+            )
         try:
             await conn.execute(text("ALTER TABLE subscription_configs ADD COLUMN device_limit INTEGER"))
         except SQLAlchemyError:
@@ -570,7 +578,7 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
         config.category_key = payload.category_key
         config.is_sold = payload.is_sold
         config.service_name = payload.service_name
-        _sync_profile_title(config, payload.profile_title)
+        _sync_profile_title(config, payload.profile_title, lock=True)
         if payload.panel_username is not None:
             config.panel_username = payload.panel_username.strip() or None
         if payload.source_panel_key is not None:
@@ -1711,9 +1719,15 @@ def _decode_profile_title(value: str) -> str:
     return unquote(value).strip().strip("\"'")
 
 
-def _sync_profile_title(config: Config, profile_title: str | None) -> None:
+def _sync_profile_title(config: Config, profile_title: str | None, *, lock: bool = False) -> None:
     """Apply an upstream title only when this link has no local override."""
-    if profile_title is not None and not bool(config.profile_title_locked):
+    if profile_title is None:
+        return
+    if lock:
+        config.profile_title = profile_title.strip() or None
+        config.profile_title_locked = bool(config.profile_title)
+        return
+    if not bool(config.profile_title_locked):
         config.profile_title = profile_title.strip() or None
 
 

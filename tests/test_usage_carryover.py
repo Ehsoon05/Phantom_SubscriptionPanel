@@ -124,6 +124,33 @@ class SyncPayloadTests(unittest.TestCase):
 
         self.assertEqual(config.profile_title, "New provider title")
 
+    def test_internal_sync_locks_profile_title_override(self) -> None:
+        config = Config(profile_title="Old title", profile_title_locked=False)
+
+        _sync_profile_title(config, "@CustomAppName", lock=True)
+
+        self.assertEqual(config.profile_title, "@CustomAppName")
+        self.assertTrue(config.profile_title_locked)
+
+    def test_locked_synced_app_title_beats_global_default(self) -> None:
+        config = Config(
+            profile_title="@CustomAppName",
+            profile_title_locked=True,
+            service_name="Express 10GB",
+        )
+
+        with patch(
+            "phantom_subscription_panel.app.load_panel_settings",
+            return_value=SimpleNamespace(
+                subscription_profile_title="@PhantomHubsDefault",
+                brand_name="Phantom Hubs",
+            ),
+        ):
+            self.assertEqual(
+                _app_title_for_subscription(config, {"title": "Provider title"}),
+                "@CustomAppName",
+            )
+
     def test_seller_web_title_uses_the_created_service_name(self) -> None:
         config = Config(
             category_key="seller",
