@@ -237,21 +237,28 @@ async def subscription(token: str, request: Request) -> Response:
     if not config:
         raise HTTPException(status_code=404, detail="Subscription not found")
 
-    upstream = _apply_usage_carryover(config, await _fetch_upstream(config.sub_link))
+    wants_html = _wants_html(request)
+    upstream = _apply_usage_carryover(
+        config,
+        await _fetch_upstream(config.sub_link, refresh=False),
+    )
     body = _subscription_body_with_info_proxies(config, upstream)
     body = await _body_with_supplements(config.id, body)
-    if _wants_html(request):
+    if wants_html:
         preview_upstream = dict(upstream)
         preview_upstream["body"] = body
         preview_upstream["lines"] = _subscription_lines(body)
-        upstream_web_title = await _fetch_upstream_web_title(config.sub_link)
         web_title = _web_title_for_subscription(
             config,
             preview_upstream,
-            upstream_web_title=upstream_web_title,
+            upstream_web_title="",
         )
         return HTMLResponse(
-            _render_subscription_page(config, preview_upstream, web_title=web_title)
+            _render_subscription_page(config, preview_upstream, web_title=web_title),
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+            },
         )
 
     await _enforce_device_limit(config, request)
@@ -767,7 +774,10 @@ async def config_metadata(token: str, authorization: str | None = Header(default
     config = await _config_for_token(token)
     if not config:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    upstream = _apply_usage_carryover(config, await _fetch_upstream(config.sub_link))
+    upstream = _apply_usage_carryover(
+        config,
+        await _fetch_upstream(config.sub_link, refresh=True),
+    )
     return {
         **_subscription_metadata(config, upstream),
         "public_url": f"{settings.public_base_url}/token/{quote(token, safe='')}",
@@ -888,8 +898,18 @@ async def _unique_token(session) -> str:
             return token
 
 
-async def _fetch_upstream(url: str) -> dict:
+async def _fetch_upstream(url: str, *, refresh: bool = False) -> dict:
     cached = _read_upstream_cache(url)
+    if refresh:
+        lock = _fetch_locks.setdefault(url, asyncio.Lock())
+        async with lock:
+            try:
+                return await _fetch_and_cache_upstream(url)
+            except HTTPException:
+                if cached:
+                    return cached
+                raise
+
     if cached:
         if time.time() - cached["cached_at"] >= settings.subscription_cache_ttl_seconds:
             _schedule_cache_refresh(url)
