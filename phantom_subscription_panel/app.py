@@ -40,6 +40,9 @@ app.mount(
 )
 security = HTTPBasic()
 CONFIG_SCHEMES = ("vmess://", "vless://", "trojan://", "ss://", "ssr://", "hysteria://", "hysteria2://", "tuic://", "wireguard://")
+UPSTREAM_HOST_ALIASES = {
+    "panel.mexicosenter.ir": "my.litegames.ir:8000",
+}
 FORWARDED_HEADERS = (
     "subscription-userinfo",
     "profile-update-interval",
@@ -421,7 +424,7 @@ async def admin_create_subscription(
     category_key: str = Form(default="manual"),
     _: str = Depends(_require_admin),
 ) -> str:
-    upstream_url = upstream_url.strip()
+    upstream_url = _normalize_upstream_url(upstream_url)
     parsed = urlparse(upstream_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return await _render_admin(load_panel_settings(), error="لینک اصلی معتبر نیست.")
@@ -482,7 +485,7 @@ async def admin_update_subscription_upstream(
     upstream_url: str = Form(...),
     _: str = Depends(_require_admin),
 ) -> str:
-    upstream_url = upstream_url.strip()
+    upstream_url = _normalize_upstream_url(upstream_url)
     parsed = urlparse(upstream_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return await _render_admin(load_panel_settings(), error="لینک اصلی جدید معتبر نیست.")
@@ -574,13 +577,14 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
     _require_sync_token(authorization, allow_integration=True)
     source_panel_key = payload.source_panel_key.strip() if payload.source_panel_key is not None else None
     volume_gb = 0 if source_panel_key == "mexico_namahdod" else payload.volume_gb
+    upstream_url = _normalize_upstream_url(payload.upstream_url)
     async with async_session() as session:
         result = await session.execute(select(Config).where(Config.public_sub_token == payload.token))
         config = result.scalar_one_or_none()
         if config is None:
-            config = Config(public_sub_token=payload.token, sub_link=payload.upstream_url, volume_gb=volume_gb)
+            config = Config(public_sub_token=payload.token, sub_link=upstream_url, volume_gb=volume_gb)
             session.add(config)
-        config.sub_link = payload.upstream_url
+        config.sub_link = upstream_url
         config.volume_gb = volume_gb
         config.category_key = payload.category_key
         config.is_sold = payload.is_sold
@@ -614,7 +618,7 @@ async def sync_config(payload: ConfigSyncPayload, authorization: str | None = He
                 payload.address_rewrites
             )
         await session.commit()
-    _schedule_cache_refresh(payload.upstream_url)
+    _schedule_cache_refresh(upstream_url)
     return "ok"
 
 
@@ -705,7 +709,7 @@ async def sync_config_supplements(
         incoming_keys: set[str] = set()
         for item in payload.supplements:
             source_key = _clean_supplement_key(item.source_key)
-            upstream_url = item.upstream_url.strip()
+            upstream_url = _normalize_upstream_url(item.upstream_url)
             parsed = urlparse(upstream_url)
             if not source_key or parsed.scheme not in {"http", "https"} or not parsed.netloc:
                 raise HTTPException(status_code=422, detail="Invalid supplemental source")
@@ -1262,6 +1266,15 @@ def _clean_token(value: str) -> str:
 
 def _token_from_url(url: str) -> str:
     return _clean_token(urlparse(url).path.rstrip("/").split("/")[-1])
+
+
+def _normalize_upstream_url(url: str) -> str:
+    cleaned = url.strip()
+    parsed = urlparse(cleaned)
+    replacement_host = UPSTREAM_HOST_ALIASES.get(parsed.netloc.lower())
+    if not replacement_host:
+        return cleaned
+    return parsed._replace(scheme=parsed.scheme or "https", netloc=replacement_host).geturl()
 
 
 def _looks_like_html(body: bytes) -> bool:
