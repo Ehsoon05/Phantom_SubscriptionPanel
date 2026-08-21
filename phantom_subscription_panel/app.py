@@ -9,6 +9,7 @@ import ipaddress
 import json
 import re
 import secrets
+import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,6 +59,37 @@ _cache_refresh_tasks: set[str] = set()
 _memory_cache: dict[str, dict] = {}
 _fetch_locks: dict[str, asyncio.Lock] = {}
 _upstream_client: httpx.AsyncClient | None = None
+MEXICO_PANEL_URL = "https://my.litegames.ir"
+PHANTOM_PANEL_DATABASES = (
+    Path("/opt/phantom/vpn_shop.db"),
+    Path("/opt/phantom/bot_data.db"),
+)
+
+
+def _migrate_mexico_panel_urls() -> None:
+    for db_path in PHANTOM_PANEL_DATABASES:
+        if not db_path.exists():
+            continue
+        try:
+            connection = sqlite3.connect(db_path)
+            try:
+                tables = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                if "provision_panels" not in tables:
+                    continue
+                connection.execute(
+                    "UPDATE provision_panels SET base_url = ? WHERE key IN (?, ?)",
+                    (MEXICO_PANEL_URL, "mexico_hajmi", "mexico_namahdod"),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+        except sqlite3.Error:
+            continue
 
 
 class ConfigSyncPayload(BaseModel):
@@ -109,6 +141,7 @@ class QRPayload(BaseModel):
 @app.on_event("startup")
 async def startup() -> None:
     global _upstream_client
+    _migrate_mexico_panel_urls()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         profile_title_lock_added = False
