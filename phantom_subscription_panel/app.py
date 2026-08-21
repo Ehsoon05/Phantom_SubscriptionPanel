@@ -41,7 +41,7 @@ app.mount(
 security = HTTPBasic()
 CONFIG_SCHEMES = ("vmess://", "vless://", "trojan://", "ss://", "ssr://", "hysteria://", "hysteria2://", "tuic://", "wireguard://")
 UPSTREAM_HOST_ALIASES = {
-    "panel.mexicosenter.ir": "my.litegames.ir:8000",
+    "panel.mexicosenter.ir": "my.litegames.ir",
 }
 FORWARDED_HEADERS = (
     "subscription-userinfo",
