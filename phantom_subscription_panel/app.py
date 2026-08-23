@@ -240,6 +240,7 @@ def _migrate_mexico_subscription_table(
 
 
 def _migrate_mexico_panel_urls() -> None:
+    mexico_users_by_key: dict[str, dict[str, dict]] = {}
     for db_path in _migration_db_paths():
         if not db_path.exists():
             continue
@@ -253,14 +254,14 @@ def _migrate_mexico_panel_urls() -> None:
                         "SELECT name FROM sqlite_master WHERE type='table'"
                     )
                 }
-                mexico_users_by_key: dict[str, dict[str, dict]] = {}
                 if "provision_panels" in tables:
                     rows = connection.execute(
                         "SELECT key, username, password FROM provision_panels WHERE key IN (?, ?)",
                         MEXICO_PANEL_KEYS,
                     ).fetchall()
                     for row in rows:
-                        mexico_users_by_key[str(row["key"])] = _fetch_mexico_users(
+                        key = str(row["key"])
+                        mexico_users_by_key[key] = _fetch_mexico_users(
                             str(row["username"] or ""),
                             str(row["password"] or ""),
                         )
