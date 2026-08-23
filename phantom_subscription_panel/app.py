@@ -181,6 +181,18 @@ def _looks_like_mexico_url(url: str) -> bool:
     return parsed.netloc.lower() in MEXICO_LEGACY_HOSTS or parsed.netloc.lower() == urlparse(MEXICO_PANEL_URL).netloc.lower()
 
 
+def _pasarguard_user_id_from_url(url: str) -> int:
+    token = _token_from_url(str(url or ""))
+    if not token:
+        return 0
+    try:
+        raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+    except (binascii.Error, ValueError):
+        return 0
+    match = re.match(rb"^v3,([0-9]+),", raw)
+    return int(match.group(1)) if match else 0
+
+
 def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
     return {str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table_name})")}
 
@@ -214,6 +226,7 @@ def _migrate_mexico_subscription_table(
         if source_panel_key not in MEXICO_PANEL_KEYS and not _looks_like_mexico_url(old_url):
             continue
         panel_username = str(row[panel_username_column] or "").strip() if panel_username_column else ""
+        old_user_id = _pasarguard_user_id_from_url(old_url)
         new_url = ""
         if panel_username:
             candidate_keys = (source_panel_key,) if source_panel_key in MEXICO_PANEL_KEYS else MEXICO_PANEL_KEYS
@@ -226,6 +239,22 @@ def _migrate_mexico_subscription_table(
                         if fetched is not None:
                             _, new_url = fetched
                     break
+        if not new_url and old_user_id > 0:
+            candidate_keys = (source_panel_key,) if source_panel_key in MEXICO_PANEL_KEYS else MEXICO_PANEL_KEYS
+            for key in candidate_keys:
+                username = next(
+                    (
+                        str(payload.get("username") or "").strip()
+                        for payload in mexico_users_by_key.get(key, {}).values()
+                        if int(payload.get("id") or 0) == old_user_id
+                    ),
+                    "",
+                )
+                if username:
+                    fetched = _fetch_mexico_user(username, (key,))
+                    if fetched is not None:
+                        _, new_url = fetched
+                        break
         if not new_url:
             new_url = _normalize_upstream_url(old_url)
         if not new_url or new_url == old_url:
@@ -494,6 +523,11 @@ async def subscription(token: str, request: Request) -> Response:
         raise HTTPException(status_code=404, detail="Subscription not found")
 
     wants_html = _wants_html(request)
+    if _pasarguard_user_id_from_url(config.sub_link) and (
+        str(config.source_panel_key or "").strip() in MEXICO_PANEL_KEYS
+        or _looks_like_mexico_url(config.sub_link)
+    ):
+        await _rebind_mexico_config(config)
     try:
         fetched_upstream = await _fetch_upstream(config.sub_link, refresh=False)
     except HTTPException as exc:
@@ -1178,6 +1212,23 @@ def _fetch_mexico_user(username: str, panel_keys: tuple[str, ...]) -> tuple[str,
     return None
 
 
+def _fetch_mexico_user_by_id(user_id: int, panel_keys: tuple[str, ...]) -> tuple[str, str] | None:
+    if user_id <= 0:
+        return None
+    credentials = _mexico_credentials_by_key()
+    for panel_key in panel_keys:
+        username, password = credentials.get(panel_key, ("", ""))
+        users = _fetch_mexico_users(username, password)
+        for payload in users.values():
+            if int(payload.get("id") or 0) != user_id:
+                continue
+            panel_username = str(payload.get("username") or "").strip()
+            if not panel_username:
+                continue
+            return _fetch_mexico_user(panel_username, (panel_key,))
+    return None
+
+
 async def _rebind_mexico_config(config: Config) -> bool:
     source_key = str(config.source_panel_key or "").strip()
     panel_keys = (source_key,) if source_key in MEXICO_PANEL_KEYS else MEXICO_PANEL_KEYS
@@ -1197,6 +1248,10 @@ async def _rebind_mexico_config(config: Config) -> bool:
         result = await asyncio.to_thread(_fetch_mexico_user, username, panel_keys)
         if result is not None:
             break
+    if result is None:
+        user_id = _pasarguard_user_id_from_url(config.sub_link)
+        if user_id > 0:
+            result = await asyncio.to_thread(_fetch_mexico_user_by_id, user_id, panel_keys)
     if result is None:
         return False
     panel_key, new_url = result
