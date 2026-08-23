@@ -42,7 +42,8 @@ app.mount(
 security = HTTPBasic()
 CONFIG_SCHEMES = ("vmess://", "vless://", "trojan://", "ss://", "ssr://", "hysteria://", "hysteria2://", "tuic://", "wireguard://")
 UPSTREAM_HOST_ALIASES = {
-    "panel.mexicosenter.ir": "my.litegames.ir",
+    "my.litegames.ir": "my.mexicosenter.ir:8000",
+    "panel.mexicosenter.ir": "my.mexicosenter.ir:8000",
 }
 FORWARDED_HEADERS = (
     "subscription-userinfo",
@@ -59,7 +60,7 @@ _cache_refresh_tasks: set[str] = set()
 _memory_cache: dict[str, dict] = {}
 _fetch_locks: dict[str, asyncio.Lock] = {}
 _upstream_client: httpx.AsyncClient | None = None
-MEXICO_PANEL_URL = "https://my.litegames.ir"
+MEXICO_PANEL_URL = "https://my.mexicosenter.ir:8000"
 PHANTOM_PANEL_DATABASES = (
     Path("/opt/phantom/vpn_shop.db"),
     Path("/opt/phantom/bot_data.db"),
