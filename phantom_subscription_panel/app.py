@@ -221,6 +221,10 @@ def _migrate_mexico_subscription_table(
                 payload = mexico_users_by_key.get(key, {}).get(panel_username)
                 if payload:
                     new_url = _subscription_url_from_payload(MEXICO_PANEL_URL, payload)
+                    if not new_url:
+                        fetched = _fetch_mexico_user(panel_username, (key,))
+                        if fetched is not None:
+                            _, new_url = fetched
                     break
         if not new_url:
             new_url = _normalize_upstream_url(old_url)
@@ -1175,12 +1179,24 @@ def _fetch_mexico_user(username: str, panel_keys: tuple[str, ...]) -> tuple[str,
 
 
 async def _rebind_mexico_config(config: Config) -> bool:
-    username = str(config.panel_username or "").strip()
-    if not username:
-        return False
     source_key = str(config.source_panel_key or "").strip()
     panel_keys = (source_key,) if source_key in MEXICO_PANEL_KEYS else MEXICO_PANEL_KEYS
-    result = await asyncio.to_thread(_fetch_mexico_user, username, panel_keys)
+    candidates = tuple(
+        dict.fromkeys(
+            value
+            for value in (
+                str(config.panel_username or "").strip(),
+                str(config.service_name or "").strip(),
+                str(config.profile_title or "").strip().lstrip("@"),
+            )
+            if value
+        )
+    )
+    result = None
+    for username in candidates:
+        result = await asyncio.to_thread(_fetch_mexico_user, username, panel_keys)
+        if result is not None:
+            break
     if result is None:
         return False
     panel_key, new_url = result
