@@ -14,6 +14,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import urljoin
 
 import httpx
 import qrcode
@@ -42,8 +43,11 @@ app.mount(
 security = HTTPBasic()
 CONFIG_SCHEMES = ("vmess://", "vless://", "trojan://", "ss://", "ssr://", "hysteria://", "hysteria2://", "tuic://", "wireguard://")
 UPSTREAM_HOST_ALIASES = {
+    "my.litegames.ir:8000": "my.mexicosenter.ir:8000",
     "my.litegames.ir": "my.mexicosenter.ir:8000",
+    "panel.mexicosenter.ir:8000": "my.mexicosenter.ir:8000",
     "panel.mexicosenter.ir": "my.mexicosenter.ir:8000",
+    "my.mexicosenter.ir": "my.mexicosenter.ir:8000",
 }
 FORWARDED_HEADERS = (
     "subscription-userinfo",
@@ -61,18 +65,187 @@ _memory_cache: dict[str, dict] = {}
 _fetch_locks: dict[str, asyncio.Lock] = {}
 _upstream_client: httpx.AsyncClient | None = None
 MEXICO_PANEL_URL = "https://my.mexicosenter.ir:8000"
+MEXICO_PANEL_KEYS = ("mexico_hajmi", "mexico_namahdod")
+MEXICO_LEGACY_HOSTS = frozenset(UPSTREAM_HOST_ALIASES)
 PHANTOM_PANEL_DATABASES = (
     Path("/opt/phantom/vpn_shop.db"),
     Path("/opt/phantom/bot_data.db"),
 )
 
 
+def _sqlite_path_from_url(url: str) -> Path | None:
+    for prefix in ("sqlite+aiosqlite:///", "sqlite:///"):
+        if url.startswith(prefix):
+            path = url[len(prefix) :]
+            return Path(path if path.startswith("/") else f"./{path}")
+    return None
+
+
+def _migration_db_paths() -> tuple[Path, ...]:
+    paths = list(PHANTOM_PANEL_DATABASES)
+    panel_db_path = _sqlite_path_from_url(settings.panel_db_url)
+    if panel_db_path is not None:
+        paths.append(panel_db_path)
+    return tuple(dict.fromkeys(paths))
+
+
+def _user_rows(payload: object) -> list[dict]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("users", "items", "data", "results"):
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            return [item for item in rows if isinstance(item, dict)]
+    return []
+
+
+def _subscription_url_from_payload(base_url: str, payload: dict) -> str:
+    subscription_url = str(payload.get("subscription_url") or "").strip()
+    if not subscription_url:
+        return ""
+    parsed = urlparse(subscription_url)
+    if parsed.scheme and parsed.netloc:
+        hostname = (parsed.hostname or "").lower()
+        if hostname not in {"localhost", "127.0.0.1", "0.0.0.0"}:
+            return _normalize_upstream_url(subscription_url)
+        subscription_url = parsed._replace(scheme="", netloc="").geturl()
+    return _normalize_upstream_url(urljoin(f"{base_url.rstrip('/')}/", subscription_url))
+
+
+def _fetch_mexico_users(username: str, password: str) -> dict[str, dict]:
+    if not username or not password:
+        return {}
+    try:
+        with httpx.Client(
+            base_url=MEXICO_PANEL_URL,
+            verify=False,
+            timeout=httpx.Timeout(35, connect=15),
+        ) as client:
+            token_response = client.post(
+                "/api/admin/token",
+                data={"username": username, "password": password},
+            )
+            token_response.raise_for_status()
+            token_payload = token_response.json()
+            token = str(
+                token_payload.get("access_token")
+                or token_payload.get("token")
+                or token_payload.get("jwt")
+                or ""
+            ).strip()
+            if not token:
+                return {}
+            headers = {"Authorization": f"Bearer {token}"}
+            users: dict[str, dict] = {}
+            offset = 0
+            while True:
+                response = client.get(
+                    "/api/users",
+                    headers=headers,
+                    params={"limit": 500, "offset": offset},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                rows = _user_rows(payload)
+                for item in rows:
+                    panel_username = str(item.get("username") or "").strip()
+                    if panel_username:
+                        users[panel_username] = item
+                total = int(payload.get("total") or 0) if isinstance(payload, dict) else 0
+                if not rows or (total > 0 and offset + len(rows) >= total):
+                    break
+                if total <= 0 and len(rows) < 500:
+                    break
+                offset += len(rows)
+            return users
+    except (httpx.HTTPError, ValueError, TypeError):
+        return {}
+
+
+def _cache_path_for_url(url: str) -> Path:
+    key = hashlib.sha256(url.encode("utf-8")).hexdigest()
+    return settings.subscription_cache_dir / f"{key}.json"
+
+
+def _clear_persisted_cache_for_url(url: str) -> None:
+    try:
+        _cache_path_for_url(url).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _looks_like_mexico_url(url: str) -> bool:
+    parsed = urlparse(str(url or "").strip())
+    return parsed.netloc.lower() in MEXICO_LEGACY_HOSTS or parsed.netloc.lower() == urlparse(MEXICO_PANEL_URL).netloc.lower()
+
+
+def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
+    return {str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table_name})")}
+
+
+def _migrate_mexico_subscription_table(
+    connection: sqlite3.Connection,
+    table_name: str,
+    *,
+    panel_key_column: str,
+    mexico_users_by_key: dict[str, dict[str, dict]],
+) -> None:
+    columns = _table_columns(connection, table_name)
+    required = {"id", "sub_link"}
+    if not required.issubset(columns):
+        return
+    panel_username_column = "panel_username" if "panel_username" in columns else ""
+    has_panel_key = panel_key_column in columns
+    selected_columns = ["id", "sub_link"]
+    if panel_username_column:
+        selected_columns.append(panel_username_column)
+    if has_panel_key:
+        selected_columns.append(panel_key_column)
+    existing_links = {
+        str(row["sub_link"]): int(row["id"])
+        for row in connection.execute(f"SELECT id, sub_link FROM {table_name}")
+    }
+    for row in connection.execute(f"SELECT {', '.join(selected_columns)} FROM {table_name}"):
+        config_id = int(row["id"])
+        old_url = str(row["sub_link"] or "")
+        source_panel_key = str(row[panel_key_column] or "").strip() if has_panel_key else ""
+        if source_panel_key not in MEXICO_PANEL_KEYS and not _looks_like_mexico_url(old_url):
+            continue
+        panel_username = str(row[panel_username_column] or "").strip() if panel_username_column else ""
+        new_url = ""
+        if panel_username:
+            candidate_keys = (source_panel_key,) if source_panel_key in MEXICO_PANEL_KEYS else MEXICO_PANEL_KEYS
+            for key in candidate_keys:
+                payload = mexico_users_by_key.get(key, {}).get(panel_username)
+                if payload:
+                    new_url = _subscription_url_from_payload(MEXICO_PANEL_URL, payload)
+                    break
+        if not new_url:
+            new_url = _normalize_upstream_url(old_url)
+        if not new_url or new_url == old_url:
+            continue
+        duplicate_id = existing_links.get(new_url)
+        if duplicate_id is not None and duplicate_id != config_id:
+            new_url = f"{new_url.split('#', 1)[0]}#phantom-alias-{config_id}"
+        connection.execute(
+            f"UPDATE {table_name} SET sub_link = ? WHERE id = ?",
+            (new_url, config_id),
+        )
+        existing_links.pop(old_url, None)
+        existing_links[new_url] = config_id
+        _clear_persisted_cache_for_url(old_url)
+        _clear_persisted_cache_for_url(new_url)
+
+
 def _migrate_mexico_panel_urls() -> None:
-    for db_path in PHANTOM_PANEL_DATABASES:
+    for db_path in _migration_db_paths():
         if not db_path.exists():
             continue
         try:
             connection = sqlite3.connect(db_path)
+            connection.row_factory = sqlite3.Row
             try:
                 tables = {
                     row[0]
@@ -80,12 +253,46 @@ def _migrate_mexico_panel_urls() -> None:
                         "SELECT name FROM sqlite_master WHERE type='table'"
                     )
                 }
-                if "provision_panels" not in tables:
-                    continue
-                connection.execute(
-                    "UPDATE provision_panels SET base_url = ? WHERE key IN (?, ?)",
-                    (MEXICO_PANEL_URL, "mexico_hajmi", "mexico_namahdod"),
-                )
+                mexico_users_by_key: dict[str, dict[str, dict]] = {}
+                if "provision_panels" in tables:
+                    rows = connection.execute(
+                        "SELECT key, username, password FROM provision_panels WHERE key IN (?, ?)",
+                        MEXICO_PANEL_KEYS,
+                    ).fetchall()
+                    for row in rows:
+                        mexico_users_by_key[str(row["key"])] = _fetch_mexico_users(
+                            str(row["username"] or ""),
+                            str(row["password"] or ""),
+                        )
+                    connection.execute(
+                        "UPDATE provision_panels SET base_url = ? WHERE key IN (?, ?)",
+                        (MEXICO_PANEL_URL, *MEXICO_PANEL_KEYS),
+                    )
+                if "subscription_configs" in tables:
+                    _migrate_mexico_subscription_table(
+                        connection,
+                        "subscription_configs",
+                        panel_key_column="source_panel_key",
+                        mexico_users_by_key=mexico_users_by_key,
+                    )
+                if "configs" in tables:
+                    _migrate_mexico_subscription_table(
+                        connection,
+                        "configs",
+                        panel_key_column="panel_key",
+                        mexico_users_by_key=mexico_users_by_key,
+                    )
+                if "subscription_config_supplements" in tables:
+                    for row in connection.execute("SELECT id, upstream_url FROM subscription_config_supplements"):
+                        old_url = str(row["upstream_url"] or "")
+                        new_url = _normalize_upstream_url(old_url)
+                        if new_url and new_url != old_url:
+                            connection.execute(
+                                "UPDATE subscription_config_supplements SET upstream_url = ? WHERE id = ?",
+                                (new_url, int(row["id"])),
+                            )
+                            _clear_persisted_cache_for_url(old_url)
+                            _clear_persisted_cache_for_url(new_url)
                 connection.commit()
             finally:
                 connection.close()
