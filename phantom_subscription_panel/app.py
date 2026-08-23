@@ -301,6 +301,13 @@ def _migrate_mexico_panel_urls() -> None:
             continue
 
 
+async def _run_mexico_panel_url_migration() -> None:
+    try:
+        await asyncio.to_thread(_migrate_mexico_panel_urls)
+    except Exception:
+        pass
+
+
 class ConfigSyncPayload(BaseModel):
     token: str
     upstream_url: str
@@ -350,7 +357,6 @@ class QRPayload(BaseModel):
 @app.on_event("startup")
 async def startup() -> None:
     global _upstream_client
-    _migrate_mexico_panel_urls()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         profile_title_lock_added = False
@@ -445,6 +451,7 @@ async def startup() -> None:
             pass
     await _collapse_legacy_device_rows()
     settings.subscription_cache_dir.mkdir(parents=True, exist_ok=True)
+    asyncio.create_task(_run_mexico_panel_url_migration())
     _upstream_client = httpx.AsyncClient(
         follow_redirects=True,
         timeout=settings.request_timeout_seconds,
@@ -483,10 +490,13 @@ async def subscription(token: str, request: Request) -> Response:
         raise HTTPException(status_code=404, detail="Subscription not found")
 
     wants_html = _wants_html(request)
-    upstream = _apply_usage_carryover(
-        config,
-        await _fetch_upstream(config.sub_link, refresh=False),
-    )
+    try:
+        fetched_upstream = await _fetch_upstream(config.sub_link, refresh=False)
+    except HTTPException as exc:
+        if exc.status_code != 502 or not await _rebind_mexico_config(config):
+            raise
+        fetched_upstream = await _fetch_upstream(config.sub_link, refresh=True)
+    upstream = _apply_usage_carryover(config, fetched_upstream)
     body = _subscription_body_with_info_proxies(config, upstream)
     body = await _body_with_supplements(config.id, body)
     if wants_html:
@@ -1091,6 +1101,115 @@ async def _config_for_token(token: str) -> Config | None:
 async def _config_for_token_in_session(session, token: str) -> Config | None:
     result = await session.execute(select(Config).where(Config.public_sub_token == token))
     return result.scalar_one_or_none()
+
+
+def _mexico_credentials_by_key() -> dict[str, tuple[str, str]]:
+    credentials: dict[str, tuple[str, str]] = {}
+    for db_path in PHANTOM_PANEL_DATABASES:
+        if not db_path.exists():
+            continue
+        try:
+            connection = sqlite3.connect(db_path)
+            connection.row_factory = sqlite3.Row
+            try:
+                tables = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                if "provision_panels" not in tables:
+                    continue
+                for row in connection.execute(
+                    "SELECT key, username, password FROM provision_panels WHERE key IN (?, ?)",
+                    MEXICO_PANEL_KEYS,
+                ):
+                    key = str(row["key"])
+                    credentials[key] = (str(row["username"] or ""), str(row["password"] or ""))
+            finally:
+                connection.close()
+        except sqlite3.Error:
+            continue
+    return credentials
+
+
+def _fetch_mexico_user(username: str, panel_keys: tuple[str, ...]) -> tuple[str, str] | None:
+    credentials = _mexico_credentials_by_key()
+    for panel_key in panel_keys:
+        panel_username, password = credentials.get(panel_key, ("", ""))
+        if not panel_username or not password:
+            continue
+        try:
+            with httpx.Client(
+                base_url=MEXICO_PANEL_URL,
+                verify=False,
+                timeout=httpx.Timeout(25, connect=10),
+            ) as client:
+                token_response = client.post(
+                    "/api/admin/token",
+                    data={"username": panel_username, "password": password},
+                )
+                token_response.raise_for_status()
+                token_payload = token_response.json()
+                token = str(
+                    token_payload.get("access_token")
+                    or token_payload.get("token")
+                    or token_payload.get("jwt")
+                    or ""
+                ).strip()
+                if not token:
+                    continue
+                response = client.get(
+                    f"/api/user/{quote(username, safe='')}",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if response.status_code == 404:
+                    continue
+                response.raise_for_status()
+                new_url = _subscription_url_from_payload(MEXICO_PANEL_URL, response.json())
+                if new_url:
+                    return panel_key, new_url
+        except (httpx.HTTPError, ValueError, TypeError):
+            continue
+    return None
+
+
+async def _rebind_mexico_config(config: Config) -> bool:
+    username = str(config.panel_username or "").strip()
+    if not username:
+        return False
+    source_key = str(config.source_panel_key or "").strip()
+    panel_keys = (source_key,) if source_key in MEXICO_PANEL_KEYS else MEXICO_PANEL_KEYS
+    result = await asyncio.to_thread(_fetch_mexico_user, username, panel_keys)
+    if result is None:
+        return False
+    panel_key, new_url = result
+    if not new_url or new_url == config.sub_link:
+        return False
+    old_url = config.sub_link
+    async with async_session() as session:
+        row = await session.get(Config, config.id)
+        if row is None:
+            return False
+        duplicate_id = (
+            await session.execute(
+                select(Config.id).where(Config.sub_link == new_url, Config.id != config.id)
+            )
+        ).scalar_one_or_none()
+        if duplicate_id is not None:
+            new_url = f"{new_url.split('#', 1)[0]}#phantom-alias-{config.id}"
+        row.sub_link = new_url
+        row.source_panel_key = panel_key
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            return False
+    _clear_upstream_cache(old_url)
+    _clear_upstream_cache(new_url)
+    config.sub_link = new_url
+    config.source_panel_key = panel_key
+    return True
 
 
 async def _supplements_for_config(config_id: int) -> list[ConfigSupplement]:
