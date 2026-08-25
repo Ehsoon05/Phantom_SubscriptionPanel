@@ -49,6 +49,8 @@ UPSTREAM_HOST_ALIASES = {
     "panel.mexicosenter.ir": "my.litegames.ir:8000",
     "my.mexicosenter.ir:8000": "my.litegames.ir:8000",
     "my.mexicosenter.ir": "my.litegames.ir:8000",
+    "my.api.novexgroup.ir:8000": "my.litegames.ir:8000",
+    "my.api.novexgroup.ir": "my.litegames.ir:8000",
 }
 FORWARDED_HEADERS = (
     "subscription-userinfo",

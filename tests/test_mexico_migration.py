@@ -24,6 +24,10 @@ class MexicoMigrationTests(unittest.TestCase):
             _normalize_upstream_url("https://panel.mexicosenter.ir/sub/old-token"),
             f"{MEXICO_PANEL_URL}/sub/old-token",
         )
+        self.assertEqual(
+            _normalize_upstream_url("https://my.api.novexgroup.ir:8000/sub/old-token"),
+            f"{MEXICO_PANEL_URL}/sub/old-token",
+        )
 
     def test_extracts_pasarguard_user_id_from_subscription_url(self) -> None:
         self.assertEqual(
