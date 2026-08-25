@@ -43,11 +43,12 @@ app.mount(
 security = HTTPBasic()
 CONFIG_SCHEMES = ("vmess://", "vless://", "trojan://", "ss://", "ssr://", "hysteria://", "hysteria2://", "tuic://", "wireguard://")
 UPSTREAM_HOST_ALIASES = {
-    "my.litegames.ir:8000": "my.mexicosenter.ir:8000",
-    "my.litegames.ir": "my.mexicosenter.ir:8000",
-    "panel.mexicosenter.ir:8000": "my.mexicosenter.ir:8000",
-    "panel.mexicosenter.ir": "my.mexicosenter.ir:8000",
-    "my.mexicosenter.ir": "my.mexicosenter.ir:8000",
+    "my.litegames.ir:8000": "my.litegames.ir:8000",
+    "my.litegames.ir": "my.litegames.ir:8000",
+    "panel.mexicosenter.ir:8000": "my.litegames.ir:8000",
+    "panel.mexicosenter.ir": "my.litegames.ir:8000",
+    "my.mexicosenter.ir:8000": "my.litegames.ir:8000",
+    "my.mexicosenter.ir": "my.litegames.ir:8000",
 }
 FORWARDED_HEADERS = (
     "subscription-userinfo",
@@ -64,7 +65,7 @@ _cache_refresh_tasks: set[str] = set()
 _memory_cache: dict[str, dict] = {}
 _fetch_locks: dict[str, asyncio.Lock] = {}
 _upstream_client: httpx.AsyncClient | None = None
-MEXICO_PANEL_URL = "https://my.mexicosenter.ir:8000"
+MEXICO_PANEL_URL = "https://my.litegames.ir:8000"
 MEXICO_PANEL_KEYS = ("mexico_hajmi", "mexico_namahdod")
 MEXICO_LEGACY_HOSTS = frozenset(UPSTREAM_HOST_ALIASES)
 PHANTOM_PANEL_DATABASES = (
