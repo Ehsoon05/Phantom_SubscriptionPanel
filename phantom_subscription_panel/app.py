@@ -374,6 +374,7 @@ class SupplementPayload(BaseModel):
 
 class SupplementsSyncPayload(BaseModel):
     supplements: list[SupplementPayload] = Field(default_factory=list)
+    info_proxies_enabled: bool | None = None
 
 
 class PanelSettingsSyncPayload(BaseModel):
@@ -1022,6 +1023,8 @@ async def sync_config_supplements(
         for source_key, row in existing.items():
             if source_key not in incoming_keys:
                 await session.delete(row)
+        if payload.info_proxies_enabled is not None:
+            config.info_proxies_enabled = bool(payload.info_proxies_enabled)
         await session.commit()
     return "ok"
 
