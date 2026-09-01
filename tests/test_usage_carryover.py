@@ -8,8 +8,10 @@ from unittest.mock import patch
 from starlette.requests import Request
 
 from phantom_subscription_panel.app import (
+    _aggregate_supplement_usage,
     _apply_usage_carryover,
     _app_title_for_subscription,
+    _is_information_config_line,
     _sync_profile_title,
     _web_title_for_subscription,
     _merge_supplemental_bodies,
@@ -268,6 +270,47 @@ class SyncPayloadTests(unittest.TestCase):
         merged = _merge_supplemental_bodies(b"", [(supplement, upstream)]).decode()
 
         self.assertIn("temp@example.net:8880", merged)
+
+    def test_supplement_information_configs_are_not_merged_without_ports(self) -> None:
+        primary = b"vless://primary@example.com:443#Primary\n"
+        supplement = ConfigSupplement(
+            source_key="rule:svn",
+            upstream_url="https://svn.example/sub/user",
+            allowed_ports_json=json.dumps([]),
+        )
+        upstream = {
+            "lines": [
+                "vless://00000000-0000-4000-8000-000000000001@info.phantomhubs.local:443#Info",
+                "vless://temp@example.net:8880#Temporary",
+            ]
+        }
+
+        merged = _merge_supplemental_bodies(primary, [(supplement, upstream)]).decode()
+
+        self.assertIn("temp@example.net:8880", merged)
+        self.assertNotIn("info.phantomhubs.local", merged)
+
+    def test_aggregate_supplement_usage_sums_primary_and_supplement_traffic(self) -> None:
+        primary = {
+            "usage": {"upload": 2, "download": 3, "total": 100, "expire": 2000},
+            "forward_headers": {},
+        }
+        supplement = {"usage": {"upload": 7, "download": 11, "expire": 3000}}
+
+        aggregate = _aggregate_supplement_usage(primary, [supplement])
+
+        self.assertEqual(aggregate["usage"]["upload"], 9)
+        self.assertEqual(aggregate["usage"]["download"], 14)
+        self.assertEqual(aggregate["usage"]["expire"], 2000)
+        self.assertIn("upload=9", aggregate["forward_headers"]["subscription-userinfo"])
+
+    def test_information_config_detection_catches_local_info_hosts(self) -> None:
+        self.assertTrue(
+            _is_information_config_line(
+                "vless://00000000-0000-4000-8000-000000000002@info.phantomhubs.local:443#Info"
+            )
+        )
+        self.assertFalse(_is_information_config_line("vless://user@example.net:443#Germany"))
 
     def test_combined_body_gets_its_own_etag(self) -> None:
         config = Config(profile_title="Phantom Hubs")

@@ -538,10 +538,12 @@ async def subscription(token: str, request: Request) -> Response:
             raise
         fetched_upstream = await _fetch_upstream(config.sub_link, refresh=True)
     upstream = _apply_usage_carryover(config, fetched_upstream)
-    body = _subscription_body_with_info_proxies(config, upstream)
-    body = await _body_with_supplements(config.id, body)
+    supplements = await _fetched_supplements_for_config(config.id)
+    aggregate_upstream = _aggregate_supplement_usage(upstream, [item for _, item in supplements])
+    body = _subscription_body_with_info_proxies(config, aggregate_upstream)
+    body = _merge_supplemental_bodies(body, supplements)
     if wants_html:
-        preview_upstream = dict(upstream)
+        preview_upstream = dict(aggregate_upstream)
         preview_upstream["body"] = body
         preview_upstream["lines"] = _subscription_lines(body)
         web_title = _web_title_for_subscription(
@@ -559,12 +561,12 @@ async def subscription(token: str, request: Request) -> Response:
 
     await _enforce_device_limit(config, request)
 
-    response_headers = _subscription_response_headers(config, upstream, body)
+    response_headers = _subscription_response_headers(config, aggregate_upstream, body)
     if _request_etag_matches(request, response_headers["ETag"]):
         return Response(status_code=304, headers=response_headers)
     return Response(
         content=body,
-        media_type=upstream["content_type"] or "text/plain; charset=utf-8",
+        media_type=aggregate_upstream["content_type"] or "text/plain; charset=utf-8",
         headers=response_headers,
     )
 
@@ -1075,6 +1077,8 @@ async def config_metadata(token: str, authorization: str | None = Header(default
         config,
         await _fetch_upstream(config.sub_link, refresh=True),
     )
+    supplements = await _fetched_supplements_for_config(config.id)
+    upstream = _aggregate_supplement_usage(upstream, [item for _, item in supplements])
     return {
         **_subscription_metadata(config, upstream),
         "public_url": f"{settings.public_base_url}/token/{quote(token, safe='')}",
@@ -1306,20 +1310,24 @@ async def _fetch_optional_supplement(item: ConfigSupplement) -> dict | None:
         return None
 
 
-async def _body_with_supplements(config_id: int, body: bytes) -> bytes:
+async def _fetched_supplements_for_config(config_id: int) -> list[tuple[ConfigSupplement, dict]]:
     supplements = await _supplements_for_config(config_id)
     if not supplements:
-        return body
+        return []
     supplemental_upstreams = await asyncio.gather(
         *[_fetch_optional_supplement(item) for item in supplements]
     )
+    return [
+        (item, fetched)
+        for item, fetched in zip(supplements, supplemental_upstreams)
+        if fetched is not None
+    ]
+
+
+async def _body_with_supplements(config_id: int, body: bytes) -> bytes:
     return _merge_supplemental_bodies(
         body,
-        [
-            (item, fetched)
-            for item, fetched in zip(supplements, supplemental_upstreams)
-            if fetched is not None
-        ],
+        await _fetched_supplements_for_config(config_id),
     )
 
 
@@ -1500,6 +1508,37 @@ def _display_total_bytes(config: Config, usage: dict) -> int:
     if config.display_total_bytes is not None:
         return max(0, int(config.display_total_bytes))
     return int(usage.get("total") or 0) or max(int(config.volume_gb or 0), 0) * 1024**3
+
+
+def _aggregate_supplement_usage(primary: dict, supplements: list[dict]) -> dict:
+    if not supplements:
+        return primary
+    aggregate = {
+        **primary,
+        "usage": dict(primary.get("usage") or {}),
+        "forward_headers": dict(primary.get("forward_headers") or {}),
+    }
+    usage = aggregate["usage"]
+    usage["upload"] = max(0, int(usage.get("upload", 0) or 0))
+    usage["download"] = max(0, int(usage.get("download", 0) or 0))
+    expires = [int(usage.get("expire") or 0)]
+    for supplement in supplements:
+        supplement_usage = supplement.get("usage") or {}
+        usage["upload"] += max(0, int(supplement_usage.get("upload", 0) or 0))
+        usage["download"] += max(0, int(supplement_usage.get("download", 0) or 0))
+        expires.append(max(0, int(supplement_usage.get("expire") or 0)))
+    positive_expires = [value for value in expires if value > 0]
+    if positive_expires:
+        usage["expire"] = min(positive_expires)
+    fields = [
+        f"upload={usage['upload']}",
+        f"download={usage['download']}",
+        f"total={max(0, int(usage.get('total', 0) or 0))}",
+    ]
+    if usage.get("expire"):
+        fields.append(f"expire={max(0, int(usage['expire']))}")
+    aggregate["forward_headers"]["subscription-userinfo"] = "; ".join(fields)
+    return aggregate
 
 
 def _subscription_metadata(config: Config, upstream: dict) -> dict:
@@ -1771,6 +1810,25 @@ def _supplement_allowed_ports(item: ConfigSupplement) -> set[int]:
     return ports
 
 
+def _is_information_config_line(line: str) -> bool:
+    parsed = urlparse(str(line).strip())
+    host = (parsed.hostname or "").lower()
+    if host.endswith(".phantomhubs.local") or host == "info.phantomhubs.local":
+        return True
+    fragment = unquote(parsed.fragment or "").casefold()
+    username = unquote(parsed.username or "").casefold()
+    if username in {"info", "subscription-info"}:
+        return True
+    markers = (
+        "روزهای باقی مانده",
+        "حجم باقی مانده",
+        "subscription information",
+        "remaining",
+        "info",
+    )
+    return any(marker in fragment for marker in markers)
+
+
 def _merge_supplemental_bodies(
     primary_body: bytes,
     supplements: list[tuple[ConfigSupplement, dict]],
@@ -1783,6 +1841,8 @@ def _merge_supplemental_bodies(
         allowed_ports = _supplement_allowed_ports(item)
         for raw_line in upstream.get("lines", []):
             line = _clean_config_line_display_name(str(raw_line).strip())
+            if _is_information_config_line(line):
+                continue
             if not line or line in seen:
                 continue
             if allowed_ports:
