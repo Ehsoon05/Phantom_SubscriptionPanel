@@ -1825,11 +1825,19 @@ def _is_information_config_line(line: str) -> bool:
     markers = (
         "روزهای باقی مانده",
         "حجم باقی مانده",
+        "سرویس خود را اپدیت",
+        "ورژن اپدیت",
         "subscription information",
         "remaining",
         "info",
     )
-    return any(marker in fragment for marker in markers)
+    if any(marker in fragment for marker in markers):
+        return True
+    return (
+        "gb" in fragment
+        and "day" in fragment
+        and any(marker in fragment for marker in ("👤", "📦", "📆", "∞"))
+    )
 
 
 def _merge_supplemental_bodies(
@@ -1901,6 +1909,7 @@ def _subscription_body_with_info_proxies(config: Config, upstream: dict) -> byte
     text, was_base64 = _decode_subscription_text(upstream["body"])
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     lines = [_clean_config_line_display_name(line) for line in lines]
+    lines = [line for line in lines if not _is_information_config_line(line)]
     lines = [_rewrite_config_line_address(line, address_rewrites) for line in lines]
     if rewrite_svn_ws:
         lines = [_rewrite_svn_fallback_endpoint(line) for line in lines]

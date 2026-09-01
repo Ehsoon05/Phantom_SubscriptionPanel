@@ -12,6 +12,7 @@ from phantom_subscription_panel.app import (
     _apply_usage_carryover,
     _app_title_for_subscription,
     _is_information_config_line,
+    _subscription_body_with_info_proxies,
     _sync_profile_title,
     _web_title_for_subscription,
     _merge_supplemental_bodies,
@@ -289,6 +290,22 @@ class SyncPayloadTests(unittest.TestCase):
 
         self.assertIn("temp@example.net:8880", merged)
         self.assertNotIn("info.phantomhubs.local", merged)
+
+    def test_primary_information_configs_are_replaced_by_local_info_configs(self) -> None:
+        config = Config(info_proxies_enabled=True, profile_title="Phantom Express")
+        upstream = {
+            "body": (
+                "vless://user@NASA.COM:4241?security=none&type=tcp#%F0%9F%93%A6%207.29%20GB%20%F0%9F%93%86%20%E2%88%9E%20day%20%F0%9F%91%A4%20Provider\n"
+                "vless://user@example.net:443?security=none&type=tcp#Germany\n"
+            ).encode(),
+            "usage": {"upload": 0, "download": 0, "total": 10 * 1024**3, "expire": 0},
+        }
+
+        body = _subscription_body_with_info_proxies(config, upstream).decode()
+
+        self.assertIn("info.phantomhubs.local", body)
+        self.assertIn("example.net:443", body)
+        self.assertNotIn("NASA.COM:4241", body)
 
     def test_aggregate_supplement_usage_sums_primary_and_supplement_traffic(self) -> None:
         primary = {
