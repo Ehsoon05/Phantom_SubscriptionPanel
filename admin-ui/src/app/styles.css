@@ -103,6 +103,7 @@ button { color: inherit; }
 .settings-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--line); }
 .wide { grid-column: 1 / -1; }
 label { display: grid; gap: 7px; color: #bdc6d2; font-size: 12px; font-weight: 700; min-width: 0; }
+.field-help { color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.7; }
 input, textarea {
   width: 100%;
   min-width: 0;

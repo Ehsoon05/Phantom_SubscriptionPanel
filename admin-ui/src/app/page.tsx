@@ -156,11 +156,12 @@ function Button({
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <label>
       <span>{label}</span>
       {children}
+      {hint ? <small className="field-help">{hint}</small> : null}
     </label>
   );
 }
@@ -389,7 +390,7 @@ export default function AdminPage() {
             <div><h2>تبدیل دستی لینک ساب</h2><p>لینک اختصاصی بدون رفرش صفحه ساخته می شود.</p></div>
           </div>
           <form onSubmit={create} className="form-grid">
-            <Field label="لینک اصلی سابسکریپشن"><input dir="ltr" required value={String(draft.upstream_url)} onChange={(event) => setDraft({ ...draft, upstream_url: event.target.value })} /></Field>
+            <Field label="لینک اصلی سابسکریپشن" hint="لینک اصلی که از پنل یا تامین‌کننده خوانده می‌شود."><input dir="ltr" required value={String(draft.upstream_url)} onChange={(event) => setDraft({ ...draft, upstream_url: event.target.value })} /></Field>
             <Field label="توکن دلخواه"><input dir="ltr" value={String(draft.token || "")} onChange={(event) => setDraft({ ...draft, token: event.target.value })} /></Field>
             <Field label="نام سرویس"><input value={String(draft.service_name)} onChange={(event) => setDraft({ ...draft, service_name: event.target.value })} /></Field>
             <Field label="Username پنل برای کانفیگ آدمک"><input value={String(draft.panel_username)} onChange={(event) => setDraft({ ...draft, panel_username: event.target.value })} /></Field>
@@ -398,7 +399,7 @@ export default function AdminPage() {
             <Field label="حجم گیگ"><input type="number" min="0" value={Number(draft.volume_gb)} onChange={(event) => setDraft({ ...draft, volume_gb: Number(event.target.value || 0) })} /></Field>
             <Field label="دسته بندی"><input value={String(draft.category_key)} onChange={(event) => setDraft({ ...draft, category_key: event.target.value })} /></Field>
             <Field label="کانال/پشتیبانی اختصاصی"><input value={String(draft.channel_handle)} onChange={(event) => setDraft({ ...draft, channel_handle: event.target.value })} /></Field>
-            <Field label="بازنویسی آدرس کانفیگ"><textarea dir="ltr" value={String(draft.address_rewrites)} onChange={(event) => setDraft({ ...draft, address_rewrites: event.target.value })} /></Field>
+            <Field label="بازنویسی آدرس سرورهای داخل کانفیگ" hint="این بخش لینک اصلی را عوض نمی‌کند؛ فقط دامنه یا IP داخل کانفیگ‌ها را با الگوی old-host=new-host جایگزین می‌کند."><textarea dir="ltr" value={String(draft.address_rewrites)} onChange={(event) => setDraft({ ...draft, address_rewrites: event.target.value })} /></Field>
             <div className="switch-row wide">
               {(["show_header", "show_config_preview", "info_proxies_enabled"] as const).map((key) => (
                 <label className="switch" key={key}>
@@ -501,7 +502,7 @@ export default function AdminPage() {
               <button className="icon-button" onClick={() => setEditing(null)}><X size={18} /></button>
             </header>
             <form onSubmit={saveEdit} className="form-grid single">
-              <Field label="لینک اصلی"><input dir="ltr" value={String(draft.upstream_url)} onChange={(event) => setDraft({ ...draft, upstream_url: event.target.value })} /></Field>
+              <Field label="لینک اصلی سابسکریپشن" hint="اگر این مقدار را تغییر بدهید، لینک اصلی سابسکریپشن با ذخیره همین فرم جایگزین می‌شود و لینک اختصاصی مشتری ثابت می‌ماند."><input dir="ltr" value={String(draft.upstream_url)} onChange={(event) => setDraft({ ...draft, upstream_url: event.target.value })} /></Field>
               <Field label="نام سرویس"><input value={String(draft.service_name)} onChange={(event) => setDraft({ ...draft, service_name: event.target.value })} /></Field>
               <Field label="Username پنل"><input value={String(draft.panel_username)} onChange={(event) => setDraft({ ...draft, panel_username: event.target.value })} /></Field>
               <Field label="نام نمایشی داخل برنامه ها"><input value={String(draft.profile_title)} onChange={(event) => setDraft({ ...draft, profile_title: event.target.value })} /></Field>
@@ -509,7 +510,7 @@ export default function AdminPage() {
               <Field label="حجم گیگ"><input type="number" min="0" value={Number(draft.volume_gb)} onChange={(event) => setDraft({ ...draft, volume_gb: Number(event.target.value || 0) })} /></Field>
               <Field label="دسته بندی"><input value={String(draft.category_key)} onChange={(event) => setDraft({ ...draft, category_key: event.target.value })} /></Field>
               <Field label="کانال اختصاصی"><input value={String(draft.channel_handle)} onChange={(event) => setDraft({ ...draft, channel_handle: event.target.value })} /></Field>
-              <Field label="بازنویسی آدرس"><textarea dir="ltr" value={String(draft.address_rewrites)} onChange={(event) => setDraft({ ...draft, address_rewrites: event.target.value })} /></Field>
+              <Field label="بازنویسی آدرس سرورهای داخل کانفیگ" hint="این بخش لینک اصلی را عوض نمی‌کند؛ فقط دامنه یا IP داخل کانفیگ‌ها را با الگوی old-host=new-host جایگزین می‌کند."><textarea dir="ltr" value={String(draft.address_rewrites)} onChange={(event) => setDraft({ ...draft, address_rewrites: event.target.value })} /></Field>
               <div className="switch-row">
                 {(["show_header", "show_config_preview", "info_proxies_enabled"] as const).map((key) => (
                   <label className="switch" key={key}>
