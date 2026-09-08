@@ -11,6 +11,7 @@ import re
 import secrets
 import sqlite3
 import time
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
@@ -22,7 +23,7 @@ import qrcode.constants
 import qrcode.exceptions
 import qrcode.image.svg
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response, status
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -40,6 +41,9 @@ app.mount(
     StaticFiles(directory=Path(__file__).resolve().parent / "static"),
     name="static",
 )
+ADMIN_UI_DIR = Path(__file__).resolve().parent / "admin_ui"
+if ADMIN_UI_DIR.exists():
+    app.mount("/admin-ui", StaticFiles(directory=ADMIN_UI_DIR), name="admin-ui")
 security = HTTPBasic()
 CONFIG_SCHEMES = ("vmess://", "vless://", "trojan://", "ss://", "ssr://", "hysteria://", "hysteria2://", "tuic://", "wireguard://")
 UPSTREAM_HOST_ALIASES = {
@@ -391,6 +395,27 @@ class QRPayload(BaseModel):
     data: str
 
 
+class AdminSubscriptionPayload(BaseModel):
+    upstream_url: str | None = None
+    token: str | None = None
+    service_name: str | None = None
+    panel_username: str | None = None
+    profile_title: str | None = None
+    device_limit: int | None = None
+    show_header: bool | None = None
+    channel_handle: str | None = None
+    show_config_preview: bool | None = None
+    info_proxies_enabled: bool | None = None
+    address_rewrites: str | None = None
+    volume_gb: int | None = None
+    category_key: str | None = None
+
+
+class AdminBulkPayload(BaseModel):
+    ids: list[int] = Field(default_factory=list)
+    patch: AdminSubscriptionPayload | None = None
+
+
 @app.on_event("startup")
 async def startup() -> None:
     global _upstream_client
@@ -582,9 +607,272 @@ def _require_admin(credentials: HTTPBasicCredentials = Depends(security)) -> str
     return credentials.username
 
 
+def _admin_public_url(token: str) -> str:
+    return f"{settings.public_base_url}/token/{quote(token, safe='')}"
+
+
+def _admin_config_payload(config: Config, device_count: int) -> dict:
+    public_url = _admin_public_url(config.public_sub_token)
+    metadata = _cached_subscription_metadata(config)
+    return {
+        "id": config.id,
+        "token": config.public_sub_token,
+        "public_url": public_url,
+        "upstream_url": config.sub_link,
+        "volume_gb": int(config.volume_gb or 0),
+        "volume_text": "نامحدود" if not config.volume_gb else f"{int(config.volume_gb)} GB",
+        "category_key": config.category_key or "manual",
+        "is_sold": bool(config.is_sold),
+        "service_name": config.service_name or "",
+        "panel_username": config.panel_username or "",
+        "source_panel_key": config.source_panel_key or "",
+        "telegram_user_id": config.telegram_user_id,
+        "profile_title": config.profile_title or "",
+        "profile_title_locked": bool(config.profile_title_locked),
+        "device_limit": int(config.device_limit or 0),
+        "device_count": int(device_count or 0),
+        "show_header": _config_bool(config.show_header, True),
+        "channel_handle": config.channel_handle or "",
+        "show_config_preview": _config_bool(config.show_config_preview, load_panel_settings().show_config_preview),
+        "info_proxies_enabled": bool(config.info_proxies_enabled),
+        "address_rewrites": _display_address_rewrites(config),
+        "metadata": metadata,
+        "search": " ".join(
+            [
+                config.service_name or "",
+                config.profile_title or "",
+                config.panel_username or "",
+                config.category_key or "",
+                config.source_panel_key or "",
+                config.public_sub_token or "",
+                config.sub_link or "",
+                public_url,
+            ]
+        ).casefold(),
+    }
+
+
+async def _admin_configs_payload() -> list[dict]:
+    async with async_session() as session:
+        configs = (await session.execute(select(Config).order_by(Config.id.desc()))).scalars().all()
+        count_result = await session.execute(
+            select(SubscriptionDevice.public_sub_token, func.count(SubscriptionDevice.id))
+            .group_by(SubscriptionDevice.public_sub_token)
+        )
+        device_counts = {str(token): int(count or 0) for token, count in count_result.all()}
+    return [_admin_config_payload(config, device_counts.get(config.public_sub_token, 0)) for config in configs]
+
+
+def _validate_admin_upstream_url(upstream_url: str) -> str:
+    upstream_url = _normalize_upstream_url(upstream_url)
+    parsed = urlparse(upstream_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=422, detail="لینک اصلی معتبر نیست.")
+    return upstream_url
+
+
+def _apply_admin_subscription_payload(config: Config, payload: AdminSubscriptionPayload, *, replace_upstream: bool) -> str | None:
+    old_url = config.sub_link
+    if replace_upstream and payload.upstream_url is not None:
+        config.sub_link = _validate_admin_upstream_url(payload.upstream_url)
+    if payload.volume_gb is not None:
+        config.volume_gb = max(0, int(payload.volume_gb))
+    if payload.category_key is not None:
+        config.category_key = payload.category_key.strip() or "manual"
+    if payload.service_name is not None:
+        config.service_name = payload.service_name.strip() or None
+    if payload.panel_username is not None:
+        config.panel_username = payload.panel_username.strip() or None
+    if payload.profile_title is not None:
+        config.profile_title = payload.profile_title.strip() or None
+        config.profile_title_locked = bool(config.profile_title)
+    if payload.device_limit is not None:
+        config.device_limit = max(0, int(payload.device_limit))
+    if payload.show_header is not None:
+        config.show_header = bool(payload.show_header)
+    if payload.channel_handle is not None:
+        config.channel_handle = payload.channel_handle.strip() or None
+    if payload.show_config_preview is not None:
+        config.show_config_preview = bool(payload.show_config_preview)
+    if payload.info_proxies_enabled is not None:
+        config.info_proxies_enabled = bool(payload.info_proxies_enabled)
+    if payload.address_rewrites is not None:
+        config.address_rewrites_json = _serialize_address_rewrites(payload.address_rewrites)
+    return old_url if replace_upstream and old_url != config.sub_link else None
+
+
 @app.get("/admin", response_class=HTMLResponse)
-async def admin_form(_: str = Depends(_require_admin)) -> str:
-    return await _render_admin(load_panel_settings())
+async def admin_form(_: str = Depends(_require_admin)) -> Response:
+    index_path = ADMIN_UI_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+    return HTMLResponse(await _render_admin(load_panel_settings()))
+
+
+@app.get("/admin/api/bootstrap", response_class=JSONResponse)
+async def admin_api_bootstrap(_: str = Depends(_require_admin)) -> dict:
+    panel = load_panel_settings()
+    return {
+        "settings": asdict(panel),
+        "public_base_url": settings.public_base_url,
+        "configs": await _admin_configs_payload(),
+        "quick_connect_keys": QUICK_CONNECT_KEYS,
+    }
+
+
+@app.post("/admin/api/settings", response_class=JSONResponse)
+async def admin_api_save_settings(payload: dict, _: str = Depends(_require_admin)) -> dict:
+    defaults = asdict(PanelSettings())
+    current = asdict(load_panel_settings())
+    for key, default_value in defaults.items():
+        if key not in payload:
+            continue
+        value = payload[key]
+        if isinstance(default_value, bool):
+            current[key] = bool(value)
+        elif isinstance(default_value, int):
+            current[key] = max(0, int(value or 0))
+        elif key.endswith("_color"):
+            current[key] = _normalize_color(str(value or ""), str(default_value))
+        else:
+            current[key] = str(value or "").strip()
+    current["quick_connect_order"] = _normalize_quick_connect_order(current.get("quick_connect_order", ""))
+    panel = PanelSettings(**current)
+    save_panel_settings(panel)
+    return {"ok": True, "settings": asdict(panel)}
+
+
+@app.post("/admin/api/subscriptions", response_class=JSONResponse)
+async def admin_api_create_subscription(payload: AdminSubscriptionPayload, _: str = Depends(_require_admin)) -> dict:
+    upstream_url = _validate_admin_upstream_url(payload.upstream_url or "")
+    token = _clean_token(payload.token or "") or _token_from_url(upstream_url) or secrets.token_urlsafe(18)
+    async with async_session() as session:
+        config = (await session.execute(select(Config).where(Config.public_sub_token == token))).scalar_one_or_none()
+        duplicate = (
+            await session.execute(select(Config.id).where(Config.sub_link == upstream_url, Config.public_sub_token != token))
+        ).scalar_one_or_none()
+        if duplicate is not None:
+            raise HTTPException(status_code=409, detail="این لینک اصلی قبلاً برای یک لینک دیگر ثبت شده است.")
+        if config is None:
+            config = Config(public_sub_token=token, sub_link=upstream_url, volume_gb=max(int(payload.volume_gb or 0), 0))
+            session.add(config)
+        config.sub_link = upstream_url
+        _apply_admin_subscription_payload(config, payload, replace_upstream=False)
+        await session.commit()
+        await session.refresh(config)
+    _schedule_cache_refresh(upstream_url)
+    return {"ok": True, "config": _admin_config_payload(config, 0)}
+
+
+@app.patch("/admin/api/subscriptions/{config_id}", response_class=JSONResponse)
+async def admin_api_update_subscription(config_id: int, payload: AdminSubscriptionPayload, _: str = Depends(_require_admin)) -> dict:
+    old_url = None
+    async with async_session() as session:
+        config = await session.get(Config, config_id)
+        if not config:
+            raise HTTPException(status_code=404, detail="لینک موردنظر پیدا نشد.")
+        if payload.upstream_url is not None:
+            new_url = _validate_admin_upstream_url(payload.upstream_url)
+            duplicate = (
+                await session.execute(select(Config.id).where(Config.sub_link == new_url, Config.id != config.id))
+            ).scalar_one_or_none()
+            if duplicate is not None:
+                raise HTTPException(status_code=409, detail="این لینک اصلی قبلاً برای یک لینک دیگر ثبت شده است.")
+        old_url = _apply_admin_subscription_payload(config, payload, replace_upstream=payload.upstream_url is not None)
+        await session.commit()
+        await session.refresh(config)
+        count = (
+            await session.execute(
+                select(func.count(SubscriptionDevice.id)).where(SubscriptionDevice.public_sub_token == config.public_sub_token)
+            )
+        ).scalar_one()
+    if old_url:
+        _clear_upstream_cache(old_url)
+    _clear_upstream_cache(config.sub_link)
+    _schedule_cache_refresh(config.sub_link)
+    return {"ok": True, "config": _admin_config_payload(config, int(count or 0))}
+
+
+@app.delete("/admin/api/subscriptions/{config_id}", response_class=JSONResponse)
+async def admin_api_delete_subscription(config_id: int, _: str = Depends(_require_admin)) -> dict:
+    upstream_url = ""
+    async with async_session() as session:
+        config = await session.get(Config, config_id)
+        if not config:
+            raise HTTPException(status_code=404, detail="لینک موردنظر پیدا نشد.")
+        upstream_url = config.sub_link
+        await _reset_devices_for_token(session, config.public_sub_token)
+        await session.execute(delete(ConfigSupplement).where(ConfigSupplement.config_id == config.id))
+        await session.delete(config)
+        await session.commit()
+    if upstream_url:
+        _clear_upstream_cache(upstream_url)
+    return {"ok": True, "deleted_id": config_id}
+
+
+@app.post("/admin/api/subscriptions/bulk-delete", response_class=JSONResponse)
+async def admin_api_bulk_delete_subscriptions(payload: AdminBulkPayload, _: str = Depends(_require_admin)) -> dict:
+    ids = sorted({int(item) for item in payload.ids if int(item) > 0})
+    if not ids:
+        raise HTTPException(status_code=422, detail="هیچ لینکی انتخاب نشده است.")
+    deleted: list[int] = []
+    upstream_urls: list[str] = []
+    async with async_session() as session:
+        rows = (await session.execute(select(Config).where(Config.id.in_(ids)))).scalars().all()
+        for config in rows:
+            deleted.append(int(config.id))
+            upstream_urls.append(config.sub_link)
+            await _reset_devices_for_token(session, config.public_sub_token)
+            await session.execute(delete(ConfigSupplement).where(ConfigSupplement.config_id == config.id))
+            await session.delete(config)
+        await session.commit()
+    for upstream_url in upstream_urls:
+        _clear_upstream_cache(upstream_url)
+    return {"ok": True, "deleted_ids": deleted}
+
+
+@app.post("/admin/api/subscriptions/bulk-update", response_class=JSONResponse)
+async def admin_api_bulk_update_subscriptions(payload: AdminBulkPayload, _: str = Depends(_require_admin)) -> dict:
+    ids = sorted({int(item) for item in payload.ids if int(item) > 0})
+    if not ids or payload.patch is None:
+        raise HTTPException(status_code=422, detail="لینک یا تغییرات انتخاب نشده است.")
+    changed: list[int] = []
+    async with async_session() as session:
+        rows = (await session.execute(select(Config).where(Config.id.in_(ids)))).scalars().all()
+        for config in rows:
+            _apply_admin_subscription_payload(config, payload.patch, replace_upstream=False)
+            changed.append(int(config.id))
+        await session.commit()
+    return {"ok": True, "changed_ids": changed, "configs": await _admin_configs_payload()}
+
+
+@app.post("/admin/api/subscriptions/{config_id}/devices/reset", response_class=JSONResponse)
+async def admin_api_reset_subscription_devices(config_id: int, _: str = Depends(_require_admin)) -> dict:
+    async with async_session() as session:
+        config = await session.get(Config, config_id)
+        if not config:
+            raise HTTPException(status_code=404, detail="لینک موردنظر پیدا نشد.")
+        await _reset_devices_for_token(session, config.public_sub_token)
+        config.device_limit_warning_count = 0
+        config.device_limit_last_warning_at = None
+        await session.commit()
+    return {"ok": True, "config_id": config_id}
+
+
+@app.post("/admin/api/subscriptions/{config_id}/revoke", response_class=JSONResponse)
+async def admin_api_revoke_subscription(config_id: int, _: str = Depends(_require_admin)) -> dict:
+    async with async_session() as session:
+        config = await session.get(Config, config_id)
+        if not config:
+            raise HTTPException(status_code=404, detail="لینک موردنظر پیدا نشد.")
+        old_token = config.public_sub_token
+        config.public_sub_token = await _unique_token(session)
+        await _reset_devices_for_token(session, old_token)
+        config.device_limit_warning_count = 0
+        config.device_limit_last_warning_at = None
+        await session.commit()
+        await session.refresh(config)
+    return {"ok": True, "config_id": config_id, "token": config.public_sub_token, "public_url": _admin_public_url(config.public_sub_token)}
 
 
 @app.post("/admin/settings", response_class=HTMLResponse)

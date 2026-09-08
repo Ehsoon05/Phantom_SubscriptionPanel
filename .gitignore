@@ -4,3 +4,6 @@ venv/
 __pycache__/
 *.pyc
 panel-settings.json
+node_modules/
+.next/
+out/
