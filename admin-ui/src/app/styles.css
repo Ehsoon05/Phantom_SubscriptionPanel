@@ -99,7 +99,7 @@ button { color: inherit; }
   gap: 13px;
   padding: 16px;
 }
-.form-grid.single { grid-template-columns: 1fr; padding: 0; }
+.form-grid.single { grid-template-columns: 1fr; padding: 20px 22px; gap: 16px; }
 .settings-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--line); }
 .wide { grid-column: 1 / -1; }
 label { display: grid; gap: 7px; color: #bdc6d2; font-size: 12px; font-weight: 700; min-width: 0; }
@@ -237,8 +237,8 @@ input:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3p
 .row-meta { display: grid; gap: 6px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
 .icon-button {
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
@@ -246,6 +246,8 @@ input:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3p
   border-radius: 7px;
   background: var(--surface-2);
   cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
 }
 .icon-button:hover { border-color: var(--primary); color: #9cb1ff; }
 .danger-icon { color: #ff858a; }
@@ -262,7 +264,7 @@ input:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3p
 .drawer {
   width: min(100%, 520px);
   min-height: 100%;
-  padding: 20px;
+  padding: 20px 22px;
   background: var(--surface);
   border-right: 1px solid var(--line);
   overflow-y: auto;
@@ -274,6 +276,7 @@ input:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3p
   gap: 14px;
   margin-bottom: 18px;
 }
+.drawer .icon-button { width: 38px; height: 38px; font-size: 19px; }
 .drawer .actions { position: sticky; bottom: 0; padding: 12px 0 0; background: var(--surface); }
 .toast {
   margin-bottom: 14px;
@@ -311,6 +314,7 @@ input:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3p
 @media (max-width: 620px) {
   .page-head, .panel-head { align-items: stretch; flex-direction: column; }
   .form-grid, .settings-grid { grid-template-columns: 1fr; }
+  .form-grid.single { padding: 16px 14px; }
   .wide { grid-column: auto; }
   .search-box { width: 100%; }
   .link-row { padding: 10px; gap: 10px; }
@@ -318,4 +322,6 @@ input:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3p
   .row-meta { display: flex; flex-wrap: wrap; gap: 8px 12px; white-space: normal; }
   .button { width: 100%; }
   .actions { justify-content: stretch; }
+  .drawer { padding-inline: 14px; }
+  .drawer .icon-button { width: 36px; height: 36px; }
 }
