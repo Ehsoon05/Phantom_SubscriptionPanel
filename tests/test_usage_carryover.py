@@ -20,6 +20,7 @@ from phantom_subscription_panel.app import (
     _request_etag_matches,
     _subscription_response_headers,
     _subscription_metadata,
+    _stale_upstream_fallback,
 )
 from phantom_subscription_panel.database import Config, ConfigSupplement
 
@@ -370,6 +371,36 @@ class SyncPayloadTests(unittest.TestCase):
 
         self.assertEqual(metadata["status"], "expired")
         self.assertEqual(metadata["total"], 10 * 1024**3)
+
+    def test_stale_fallback_drops_only_past_expiry(self) -> None:
+        upstream = {
+            "usage": {"upload": 1, "download": 2, "total": 10, "expire": 1},
+            "forward_headers": {
+                "subscription-userinfo": "upload=1; download=2; total=10; expire=1"
+            },
+        }
+
+        stale = _stale_upstream_fallback(upstream)
+
+        self.assertTrue(stale["upstream_stale"])
+        self.assertEqual(stale["usage"]["expire"], 0)
+        self.assertNotIn("expire=", stale["forward_headers"]["subscription-userinfo"])
+        self.assertEqual(upstream["usage"]["expire"], 1)
+
+    def test_stale_metadata_is_not_time_expired(self) -> None:
+        config = Config(volume_gb=10)
+        upstream = _stale_upstream_fallback(
+            {
+                "usage": {"upload": 1, "download": 2, "total": 10 * 1024**3, "expire": 1},
+                "forward_headers": {},
+                "lines": ["vless://example"],
+            }
+        )
+
+        metadata = _subscription_metadata(config, upstream)
+
+        self.assertEqual(metadata["status"], "active")
+        self.assertTrue(metadata["upstream_stale"])
 
 
 if __name__ == "__main__":

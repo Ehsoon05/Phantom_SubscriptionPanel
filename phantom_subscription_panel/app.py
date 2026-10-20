@@ -1645,12 +1645,14 @@ async def _fetch_upstream(url: str, *, refresh: bool = False) -> dict:
                 return await _fetch_and_cache_upstream(url)
             except HTTPException:
                 if cached:
-                    return cached
+                    return _stale_upstream_fallback(cached)
                 raise
 
     if cached:
         if time.time() - cached["cached_at"] >= settings.subscription_cache_ttl_seconds:
             _schedule_cache_refresh(url)
+            if _upstream_expiry_is_past(cached):
+                return _stale_upstream_fallback(cached)
         return cached
 
     lock = _fetch_locks.setdefault(url, asyncio.Lock())
@@ -1659,6 +1661,33 @@ async def _fetch_upstream(url: str, *, refresh: bool = False) -> dict:
         if cached:
             return cached
         return await _fetch_and_cache_upstream(url)
+
+
+def _upstream_expiry_is_past(upstream: dict) -> bool:
+    expire = int((upstream.get("usage") or {}).get("expire") or 0)
+    return expire > 0 and expire <= int(time.time())
+
+
+def _stale_upstream_fallback(cached: dict) -> dict:
+    """Keep cached configs usable without trusting an old expiry timestamp."""
+    stale = {
+        **cached,
+        "usage": dict(cached.get("usage") or {}),
+        "forward_headers": dict(cached.get("forward_headers") or {}),
+        "upstream_stale": True,
+    }
+    if not _upstream_expiry_is_past(stale):
+        return stale
+
+    stale["usage"]["expire"] = 0
+    usage = stale["usage"]
+    fields = [
+        f"upload={max(0, int(usage.get('upload', 0) or 0))}",
+        f"download={max(0, int(usage.get('download', 0) or 0))}",
+        f"total={max(0, int(usage.get('total', 0) or 0))}",
+    ]
+    stale["forward_headers"]["subscription-userinfo"] = "; ".join(fields)
+    return stale
 
 
 async def _fetch_and_cache_upstream(url: str) -> dict:
@@ -1808,6 +1837,8 @@ def _aggregate_supplement_usage(primary: dict, supplements: list[dict]) -> dict:
         **primary,
         "usage": dict(primary.get("usage") or {}),
         "forward_headers": dict(primary.get("forward_headers") or {}),
+        "upstream_stale": bool(primary.get("upstream_stale"))
+        or any(bool(item.get("upstream_stale")) for item in supplements),
     }
     usage = aggregate["usage"]
     usage["upload"] = max(0, int(usage.get("upload", 0) or 0))
@@ -1851,6 +1882,7 @@ def _subscription_metadata(config: Config, upstream: dict) -> dict:
         "expire": expire,
         "config_count": len(upstream.get("lines") or []),
         "status": "expired" if expired else "active",
+        "upstream_stale": bool(upstream.get("upstream_stale")),
     }
 
 
